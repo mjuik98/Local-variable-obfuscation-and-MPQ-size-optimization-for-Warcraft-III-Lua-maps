@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.w3x
+*.w3m
+*.w3n
+*.log
