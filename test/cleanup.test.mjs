@@ -134,3 +134,38 @@ test('contract cleanup still validates import data and removes only matching man
     const invalidFlag = fixture(undefined, [['war3map.imp', createImports([{ flag: 99, path: 'lotkt-object-history.json' }])]]);
     assert.throws(() => plan(invalidFlag), /Unsupported import path flag/);
 });
+
+test('editor data cleanup removes region, camera, sound data and the import manifest only when selected and reviewed', async () => {
+    const { protectMap } = await import('../src/protect.mjs');
+    const editorData = ['war3map.w3r', 'war3map.w3c', 'war3map.w3s', 'war3map.imp'];
+    const script = 'function config() end\nfunction main() return "ok" end\n';
+    const source = createLuaMap({ script, extraEntries: [
+        ['war3map.w3r', Buffer.from('regions')], ['war3map.w3c', Buffer.from('cameras')], ['war3map.w3s', Buffer.from('sounds')],
+        ['war3map.imp', createImports([{ path: 'asset.bin' }])], ['war3mapImported\asset.bin', Buffer.from('asset')],
+    ] });
+    const kept = openMap(protectMap(source).bytes);
+    for (const name of editorData) assert(kept.has(name), name + ' is kept by default');
+    const result = protectMap(source, { cleanup: { editorData: true } }), output = openMap(result.bytes);
+    assert.deepEqual(result.summary.removedFiles, editorData);
+    for (const name of editorData) assert(!output.has(name), name + ' is removed');
+    assert.deepEqual(output.read('war3mapImported\asset.bin'), Buffer.from('asset'), 'Imported files stay readable by path');
+    assert(!output.read('(listfile)').toString().includes('war3map.w3r'));
+    const partial = openMap(protectMap(source, { cleanup: { editorData: true, keepFiles: ['WAR3MAP.IMP'] } }).bytes);
+    assert(partial.has('war3map.imp') && !partial.has('war3map.w3s'));
+    const referencing = createLuaMap({ script: 'function config() end\nfunction main() return "war3map.w3c" end\n', extraEntries: [['war3map.w3c', Buffer.from('cameras')]] });
+    assert.throws(() => protectMap(referencing, { cleanup: { editorData: true } }), /references cleanup candidate/);
+    const preloader = createLuaMap({ script: 'function config() end\nfunction main() Preloader("x") end\n', extraEntries: [['war3map.w3r', Buffer.from('regions')]] });
+    assert.throws(() => protectMap(preloader, { cleanup: { editorData: true } }), /Preloader/);
+});
+
+test('listfile removal runs after every stage and keeps all entries readable by name', async () => {
+    const { protectMap } = await import('../src/protect.mjs');
+    const source = createLuaMap({ extraEntries: [['war3mapImported\model.mdx', Buffer.from('model bytes')]], mpq: { attributes: true } });
+    const result = protectMap(source, { cleanup: { listfile: true }, compression: { sectorSizeShift: 3 } }), output = openMap(result.bytes);
+    assert(!output.has('(listfile)'));
+    assert.deepEqual(output.listNames(), []);
+    for (const name of ['war3map.lua', 'war3map.w3i', 'war3map.w3e', 'war3mapImported\model.mdx', '(attributes)']) assert(output.read(name), name);
+    assert(result.summary.removedFiles.includes('(listfile)'));
+    assert.deepEqual(result.summary.savings.stages.map(stage => stage.id).slice(-2), ['sectors', 'listfile']);
+    assert.equal(output.inspect().sectorSize, 4096, 'The sector rebuild used the listfile before removal');
+});

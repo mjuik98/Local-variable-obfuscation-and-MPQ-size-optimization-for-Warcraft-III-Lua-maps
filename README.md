@@ -8,7 +8,7 @@ Warcraft III Lua 맵의 이름을 난독화하고 배포 용량을 줄이는 로
 
 - Lua 5.3 문법과 lexical scope를 분석해 local 변수·함수·매개변수 이름을 결정적으로 변경한다. 참조가 많은 바인딩에 짧은 이름을 우선 배정하고, 캡처와 이름 가림이 충돌하지 않는 스코프에서 이름을 재사용한다.
 - 토큰 단위로 주석과 불필요한 공백을 제거한다. 기본값에서는 전역/native/public 이름, `main/config`, `gg_*`·`udg_*`, 메서드 필드를 보존한다. 문자열 표기는 별도 옵션을 켠 경우에만 변경한다.
-- 실험 옵션으로 정적 조회만 확인된 스크립트 정의 전역, 외부로 전달되지 않는 닫힌 테이블의 필드 이름을 변경하고, 엔진 함수 호출을 하나의 local 테이블 조회로 숨긴다. 동적 전역 조회를 확인할 수 없으면 거부한다. 자세한 규칙은 아래 [전역·필드 이름 변경과 엔진 함수 숨김](#전역필드-이름-변경과-엔진-함수-숨김-실험)에 있다.
+- 실험 옵션으로 정적 조회만 확인된 스크립트 정의 전역, 외부로 전달되지 않는 닫힌 테이블의 필드 이름을 변경하고, 엔진·Lua 라이브러리 함수 호출을 하나의 local 테이블 조회로 숨긴다. 리터럴 rawcode의 `FourCC` 호출은 같은 정수로 바꿀 수 있다. 동적 전역 조회를 확인할 수 없으면 거부한다. 자세한 규칙은 아래 [전역·필드 이름 변경과 엔진 함수 숨김](#전역필드-이름-변경과-엔진-함수-숨김-실험)에 있다.
 - 변환 뒤 Lua를 재파싱하고, local 이름 외의 구문 구조와 변수 바인딩이 같은지 확인한다.
 - 선택한 문자열 리터럴을 숫자 바이트 이스케이프로 숨긴다. 복원 함수·추가 호출 없이 Lua가 원래 바이트를 읽으며, 변환 뒤 모든 문자열의 바이트와 구문 구조를 확인한다.
 - 선택한 seed로 짧은 local 이름의 배정을 다양화하는 `seeded` 모드를 제공한다. 기존 `compact` 모드와 기본 출력은 유지한다.
@@ -84,7 +84,8 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--rename-globals` / `--no-rename-globals` | 정적 조회만 확인된 스크립트 정의 전역 이름 변경 켜기 / 끄기 (실험) |
 | `--rename-fields` / `--no-rename-fields` | 닫힌 테이블 필드 이름 변경 켜기 / 끄기 (실험) |
 | `--keep-global Name` | 해당 전역 이름 보존; 반복 지정 가능 |
-| `--hide-natives` / `--no-hide-natives` | 엔진 함수 호출을 local 테이블 조회로 숨기기 켜기 / 끄기 (실험) |
+| `--hide-natives` / `--no-hide-natives` | 엔진·Lua 라이브러리 함수 호출을 local 테이블 조회로 숨기기 켜기 / 끄기 (실험) |
+| `--fold-fourcc` / `--no-fold-fourcc` | 리터럴 rawcode의 `FourCC` 호출을 같은 정수로 바꾸기 켜기 / 끄기 (실험) |
 | `--name-mode ID` | `compact` 또는 seed별 이름을 배정하는 `seeded` |
 | `--seed Value` | 이름·런타임 문자열·VM의 결정적 변환 seed |
 | `--hide-strings` / `--no-hide-strings` | 문자열 숨김 켜기 / 설정 파일에서 켠 문자열 숨김 해제 |
@@ -95,6 +96,8 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--keep-string Value` | 디코딩한 문자열 값 보존; 반복 지정 가능 |
 | `--clean-editor` | 참조 검사 후 `war3map.wtg`, `war3map.wct` 정리 |
 | `--clean-development` | 참조 검사 후 LoTKT 개발 메타데이터 두 파일 정리 |
+| `--clean-editor-data` | 참조 검사 후 `war3map.w3r/w3c/w3s`와 `war3map.imp` 정리 |
+| `--remove-listfile` / `--keep-listfile` | 모든 단계가 끝난 뒤 MPQ `(listfile)` 삭제 / 보존 (실험) |
 | `--cleanup-contract File.json` | 정확히 일치하는 입력 맵의 의존성 검토 계약 읽기 |
 | `--review-cleanup` | 이전 계약과 두 입력 맵을 비교; 맵 출력 없음 |
 | `--previous-input Map.w3x` | 이전 계약에 정확히 일치하는 검토 원본 |
@@ -118,7 +121,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `protect` | 기본 보호 | local 이름·공백 최적화, 파일 보존, 문자열 숨김 끔 |
 | `distribution` | 배포 준비 | 기본 보호 + 알려진 에디터·개발 파일 정리; 정리를 켜면 정확한 입력의 계약 필요 |
 | `hardened` | 보호 강화 | seed 기반 local 이름 변경 + 런타임 문자열 복원; 파일 보존·VM 자동 선택 없음 |
-| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진 함수 호출 숨김(이름도 런타임 문자열로 암호화); 파일 정리·섹터 크기 변경은 별도 |
+| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + `(listfile)` 삭제; 파일 정리·섹터 크기 변경은 별도 |
 
 설정 우선순위는 기본값 → 프리셋 → JSON → CLI 또는 화면의 명시적 선택이다. 프리셋을 생략하면 기존 기본 동작을 사용한다. JSON 설정은 덮어쓰기 전에 엄격하게 검증하며 잘못된 값을 CLI로 가리지 않는다. 반복 보존·제외·VM 선택 옵션은 JSON 배열에 추가된다. `--no-vm`은 합친 VM 목록을 모두 비우며 다른 VM 선택보다 우선한다. `distribution --no-cleanup`은 파일 정리를 해제한다. `hardened`와 `maximum`에서만 문자열 숨김을 기본으로 켠다. 화면의 문자열 체크박스가 최종 활성 여부를 결정한다.
 
@@ -169,15 +172,17 @@ VM은 원본의 제한된 조건 분기를 명령 데이터와 해석 루프로 
 - `src/engine-names.mjs`의 엔진 이름(로컬 World Editor `common.j`·`Blizzard.j`의 native·함수·전역 선언, Lua 기본 라이브러리, `FourCC`·`__jarray`), `main/config`, `gg_*`·`udg_*`, `lua.keepGlobals`
 - 정확히 식별자 형태인 문자열 리터럴과 같은 이름(`ExecuteFunc("Name")`, `_G["Name"]`, `TriggerRegisterVariableEvent`의 변수 이름 등)
 - `_G[key]`의 key를 상수·상수 연결, local 정의, 직접 호출만 되는 local 함수의 인자로 추적해 얻은 이름
-- 로딩 중 처음 정의가 끝나기 전에 읽히는 전역(엔진 값을 감싸는 hook 형태)
+- 로딩 중 처음 정의가 끝나기 전에 읽히는 전역(엔진 값을 감싸는 hook 형태). 단, 엔진 이름이 아닌 전역의 모듈 기본값 `Name = Name or {...}`은 nil 또는 자기 테이블만 읽으므로 대상에 포함한다.
 
 `_ENV`, 값으로 전달되거나 저장되는 `_G`(예: `pairs(_G)`, `rawget(_G, k)`), 추적할 수 없는 `_G[key]`, `load/loadfile/dofile/require/debug/package`, 이름을 정적으로 알 수 없는 `ExecuteFunc`·`TriggerRegisterVariableEvent`가 하나라도 있으면 원인 위치와 함께 거부한다. 새 이름은 엔진 이름·보존 이름·문자열로 조회되는 이름과 겹치지 않으며, local 이름과 같은 스코프 충돌 규칙으로 배정한다. 변환 뒤 모든 참조가 같은 전역 또는 같은 local에 연결되는지 다시 확인한다.
 
 `common.j`·`Blizzard.j`에 없는 최신 패치 native를 스크립트가 다시 정의하면 위 hook 검사로만 보호된다. 이런 이름이 있으면 `--keep-global`로 보존한다. 엔진 이름 목록은 파일 머리의 SHA-256과 같은 `common.j`·`Blizzard.j`에서 native·function·globals 선언 이름만 모은 것이다. 새 패치의 선언 파일로 같은 규칙에 따라 다시 만들 수 있다.
 
-**닫힌 테이블 필드 이름 변경**(`lua.renameFields`)은 문자열 키만 가진 생성자로만 값이 정해지고, 모든 사용이 `T.name`·`T:name()`·`function T.name`·`function T:name` 형태인 테이블에 적용한다. 테이블이 인자·반환값·다른 변수·테이블에 전달되거나, 동적 인덱스·`pairs`·metatable에 쓰이면 바꾸지 않는다. 콜론 호출은 테이블을 `self`로 넘기므로 해당 필드가 콜론 메서드로만 정의되고 그 메서드의 `self`도 같은 조건을 만족할 때만 허용한다. 필드 이름은 테이블마다 독립적으로 짧은 이름을 배정한다.
+**닫힌 테이블 필드 이름 변경**(`lua.renameFields`)은 문자열 키만 가진 생성자(또는 위 모듈 기본값)로만 값이 정해지고, 모든 사용이 `T.name`·`T:name()`·`function T.name`·`function T:name` 형태인 테이블에 적용한다. 테이블이 인자·반환값·다른 변수·테이블에 전달되거나, 동적 인덱스·`pairs`·metatable에 쓰이면 바꾸지 않는다. 콜론 호출은 테이블을 `self`로 넘기므로 해당 필드가 콜론 메서드로만 정의되고 그 메서드의 `self`도 같은 조건을 만족할 때만 허용한다. 필드 이름은 테이블마다 독립적으로 짧은 이름을 배정한다.
 
-**엔진 함수 호출 숨김**(`lua.hideNatives`)은 엔진 native·Blizzard 함수 참조를 하나의 local 테이블 조회(`t[3](...)`)로 바꾼다. 테이블은 처음 접근할 때 같은 이름의 전역을 읽어 함수 값을 보관하므로 엔진 초기화 순서와 무관하다. 스크립트가 대입하거나 `_G.Name =`으로 바꾸는 이름, 값이 바뀌는 엔진 전역 변수(`bj_*`·상수)는 바꾸지 않는다. 동적 `_G` 대입 등 전역 분석을 확인할 수 없으면 거부한다. 런타임 문자열을 함께 켜면 테이블의 함수 이름 목록도 ChaCha20으로 암호화한다. 오류 메시지의 함수 이름 표시는 달라질 수 있다.
+**엔진·라이브러리 함수 호출 숨김**(`lua.hideNatives`)은 엔진 native·Blizzard 함수, 고정된 Lua 기본 함수(`pairs`, `tostring`, `select` 등)와 `math/string/table/utf8/coroutine/os` 라이브러리 필드 참조를 하나의 local 테이블 조회(`t[3](...)`)로 바꾼다. 테이블은 처음 접근할 때 같은 이름의 전역(과 필드)을 읽어 함수 값을 보관하므로 엔진 초기화 순서와 무관하다. 스크립트가 대입하거나 `_G.Name =`으로 바꾸는 이름, 값이 바뀌는 엔진 전역 변수(`bj_*`·상수), `load` 계열과 `collectgarbage`는 바꾸지 않는다. 라이브러리는 모든 참조가 정적 필드 읽기이고 `_G`로 접근하지 않을 때만 숨긴다. 동적 `_G` 대입 등 전역 분석을 확인할 수 없으면 거부한다. 런타임 문자열을 함께 켜면 테이블의 이름 목록도 ChaCha20으로 암호화한다. 오류 메시지의 함수 이름 표시는 달라질 수 있다.
+
+**`FourCC` 치환**(`lua.foldFourCC`)은 스크립트가 다시 정의하지 않은 전역 `FourCC`에 인쇄 가능한 ASCII 4바이트 리터럴을 넘긴 호출을 같은 값의 16진수 정수(`FourCC("A000")` → `0x41303030`)로 바꾼다. 결과 값은 같고 실행 중 함수 호출이 사라지며 rawcode 문자열이 소스에 남지 않는다. 동적 인자, 4바이트가 아닌 값, 호출문 자체·다른 식의 base로 쓰인 호출은 그대로 둔다. 이 옵션은 rawcode의 **값**을 보존하고 **표기**만 바꾸므로 기본값이 꺼져 있으며 명시적으로 선택했을 때만 적용한다. LoTKT 2.4E에서는 5,032개 중 4,338개를 치환했고, 압축 크기는 치환하지 않을 때보다 약 2 KB 컸다.
 
 2026-10-06에 `LoTKT 2.4E.w3x`(Lua 8,152,905바이트)를 메모리에서 검사한 결과는 다음과 같다. 정적 검사와 Fengari 컴파일 검사만 수행했으며 게임 실행 결과가 아니다.
 
@@ -185,8 +190,9 @@ VM은 원본의 제한된 조건 분기를 명령 데이터와 해석 루프로 
 | --- | --- | --- |
 | `protect` | local 47,806개 | 59,727,097 |
 | `hardened` | + 런타임 문자열 2,588개 | 59,776,870 |
-| `maximum` | + 전역 3,570개, 닫힌 테이블 588개의 필드 1,287개, 엔진 함수 564개 | 59,534,925 |
-| `maximum --sector-size-shift 7` | + 64 KiB sector | 52,736,894 |
+| `maximum` | + 전역 3,570개, 닫힌 테이블 588개의 필드 1,287개, 엔진 함수 564개, 라이브러리 함수 33개, `FourCC` 4,338개, `(listfile)` 삭제 | 59,536,681 (listfile 삭제 전 측정) |
+| `maximum --sector-size-shift 7` | + 64 KiB sector | 52,736,894 (라이브러리 숨김·`FourCC` 치환 추가 전 측정) |
+| 위 + 에디터·개발·에디터 데이터 정리(검토 계약) | + 파일 9개 삭제 | 51,835,232 |
 
 `_G` 전체를 순회하는 디버그 라이브러리가 있는 맵처럼 거부되는 입력은 `--no-rename-globals --no-rename-fields --no-hide-natives`로 해당 옵션만 해제한다. 작은 맵에서는 런타임 복원 함수의 고정 크기 때문에 맵이 커질 수 있다.
 
@@ -198,13 +204,17 @@ World Editor 맵은 4 KiB sector(shift 3)를 사용하며 각 sector를 독립�
 
 **Warcraft III가 4 KiB가 아닌 sector 크기를 읽는지는 이 도구가 확인하지 않는다.** 정적 검사는 MPQ 재읽기만 증명한다. 배포 전에 테스트 맵으로 로딩·모든 리소스 표시·저장 데이터·멀티플레이를 직접 확인하고, 문제가 있으면 `--keep-sector-size`로 되돌린다.
 
+## `(listfile)` 삭제 (실험)
+
+`cleanup.listfile` 또는 `--remove-listfile`은 sector 변경까지 모든 단계가 끝난 뒤 MPQ `(listfile)`을 삭제한다. Warcraft III는 파일을 이름의 해시로 찾으므로 실행에 listfile이 필요하지 않다. MPQ 도구가 파일 목록을 바로 보여 주지 못하고 World Editor로 저장할 때 import 파일이 빠지기 쉬워진다. 알려진 이름 목록으로 대입하면 다시 찾을 수 있어 완전한 숨김은 아니다. 삭제 뒤에도 모든 필수 파일을 이름으로 다시 읽어 검증하며, 결과 맵의 파일별 절감 표는 이름 대신 블록 번호로 표시될 수 있다. `maximum` 프리셋에서 켜진다.
+
 ## 파일 정리
 
 **기본값은 파일 정리 비활성화다.** LoTKT에는 동적 `Preloader`와 전역 조회가 있어 파일 이름 검색만으로 실행 의존성을 확정할 수 없다. 기본 실행은 모든 에디터·개발·리소스 파일을 보존한다.
 
 고급 설정에서 **에디터 파일 정리·개발 파일 정리**를 켠 경우도 같은 검사를 적용한다. `Preloader` 오류는 실행 파일 사용 여부를 확인하지 못해 삭제를 중단했다는 뜻이다. 정리하려면 메인 **작업** 화면의 **검토 계약 → 찾아보기**에서 현재 입력 맵을 검토한 JSON을 선택한 뒤 검사한다. 일치하는 계약이 없으면 두 정리 옵션을 해제한다. Lua 보호·문자열 숨김·재압축은 정리를 끈 상태에서도 사용할 수 있다. 프리셋을 바꾸거나 검사 버튼만 다시 눌러 이 조건을 우회하지 않는다.
 
-정리는 위의 명시 옵션 또는 JSON 설정으로 켠다. 대상은 에디터 트리거 데이터 두 파일과 `lotkt-object-history.json`, `lotkt-object-receipt.json`뿐이다. 모델·텍스처·오브젝트·스킨·일반 import나 이름 미확인 파일을 미사용으로 추측해 삭제하지 않는다.
+정리는 위의 명시 옵션 또는 JSON 설정으로 켠다. 대상은 에디터 트리거 데이터 두 파일, `lotkt-object-history.json`, `lotkt-object-receipt.json`, 그리고 별도 옵션인 에디터 데이터(`war3map.w3r` 영역, `war3map.w3c` 카메라, `war3map.w3s` 사운드, `war3map.imp` import 목록)뿐이다. Lua 맵은 editor `main`이 `CreateRegions`·`CreateCameras`·`InitSounds`로 같은 데이터를 스크립트에서 만들고, import 파일은 MPQ 경로로 읽힌다. 에디터 데이터를 지우면 World Editor에서 해당 정보가 사라지므로 편집용 원본을 유지하고, 영역 이벤트·카메라·사운드·import 리소스를 게임에서 확인한다. `war3map.imp`를 지우면 행 단위 import 갱신은 하지 않는다. 모델·텍스처·오브젝트·스킨·일반 import나 이름 미확인 파일을 미사용으로 추측해 삭제하지 않는다.
 
 정리 후보의 문자열 참조는 Lua escape와 상수 문자열 연결까지 확인한다. 파일 로더, `debug/package`, 확인할 수 없는 `_G/_ENV` 접근 또는 환경 테이블 별칭이 있으면 정리를 거부한다. 이 경우 `--no-cleanup` 또는 필요한 후보의 `--keep-file`로 보존한다.
 
@@ -213,6 +223,12 @@ World Editor 맵은 4 KiB sector(shift 3)를 사용하며 각 sector를 독립�
 계약은 파일명이나 버전명이 같은 다른 맵에 재사용할 수 없다. 새 빌드와 이미 보호한 사본은 원본 맵·Lua 해시가 달라질 수 있다. Windows 패키지의 `cleanup` 폴더에도 검토 계약을 포함하지만, 현재 입력과 정확히 일치하는 계약을 직접 선택해야 한다. 이전 계약을 선택하면 불일치 오류로 중단한다.
 
 2026-10-06에 검토한 `LoTKT/dist/LoTKT 2.4E.w3x`에는 `cleanup/lotkt-2.4e-2026-10-06-contract.json`을 사용한다. 검토본의 맵 SHA-256은 `7fb4bd96153b66560160d534bae4e9a9cd90e63aff464ab3c18d59de89612e63`이다. 저장 파일·native 조회와 모든 활성 파일, 오브젝트·스킨·import·모델을 실제 입력 기준으로 검토했다. receipt의 원본 sourceHash에 해당하는 맵은 식별하지 못했으며 provenance 검증을 했다고 주장하지 않는다. 외부 저장 파일은 기존 FileIO 형식으로 가정하고, 외부 주입 스크립트·애드온과 실제 게임 검증은 범위 밖이다. 이후 다시 빌드한 2.4E에는 이 계약도 일치하지 않을 수 있다.
+
+같은 입력의 에디터 데이터까지 정리하려면 `cleanup/lotkt-2.4e-2026-10-06-editor-data-contract.json`을 사용한다. 기존 검토에 더해 editor `main`(412..428행)의 `InitSounds`·`CreateRegions`·`CreateCameras` 호출, 영역 88개·카메라 1개·사운드 7개가 Lua의 `gg_rct_`·`gg_cam_`·`gg_snd_` 개수와 일치함, import 목록 873행이 모두 MPQ에 남아 있음과 네 파일 이름의 참조 부재를 기록했다. 게임 실행으로 확인한 것은 아니다.
+
+```powershell
+npm run protect -- "..\LoTKT\dist\LoTKT 2.4E.w3x" --check --preset maximum --clean-editor --clean-development --clean-editor-data --cleanup-contract "cleanup/lotkt-2.4e-2026-10-06-editor-data-contract.json" --sector-size-shift 7
+```
 
 Windows에서는 위 계약을 **검토 계약 → 찾아보기**로 선택하고, 고급 설정에서 정리 두 항목을 켠 뒤 검사한다. 문자열 보호도 적용하려면 **보호 강화** 프리셋을 선택한다. 계약 자체가 정리나 문자열 보호를 켜지는 않는다.
 
@@ -250,7 +266,8 @@ npm run protect -- "C:\Maps\Reviewed.w3x" --check --hide-strings --clean-editor 
     "renameGlobals": false,
     "renameFields": false,
     "keepGlobals": [],
-    "hideNatives": false
+    "hideNatives": false,
+    "foldFourCC": false
   },
   "strings": {
     "enabled": false,
@@ -260,6 +277,8 @@ npm run protect -- "C:\Maps\Reviewed.w3x" --check --hide-strings --clean-editor 
   "cleanup": {
     "editor": false,
     "development": false,
+    "editorData": false,
+    "listfile": false,
     "keepFiles": []
   },
   "compression": {

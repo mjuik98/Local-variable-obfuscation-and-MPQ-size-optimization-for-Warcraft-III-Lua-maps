@@ -5,9 +5,12 @@ import { canonicalPath } from './config.mjs';
 
 const EDITOR_FILES = ['war3map.wtg', 'war3map.wct'];
 const DEVELOPMENT_FILES = ['lotkt-object-history.json', 'lotkt-object-receipt.json'];
+// Editor placement data and the import manifest. A Lua map script creates
+// regions, cameras and sounds itself; imported files are read by MPQ path.
+const EDITOR_DATA_FILES = ['war3map.w3r', 'war3map.w3c', 'war3map.w3s', 'war3map.imp'];
 const FILE_APIS = new Set(['io', 'require', 'load', 'loadfile', 'dofile', 'Preloader', 'debug', 'package']);
 const ENVIRONMENTS = new Set(['_G', '_ENV']);
-export const CLEANUP_CANDIDATES = Object.freeze([...EDITOR_FILES, ...DEVELOPMENT_FILES]);
+export const CLEANUP_CANDIDATES = Object.freeze([...EDITOR_FILES, ...DEVELOPMENT_FILES, ...EDITOR_DATA_FILES]);
 const CANDIDATES = new Set(CLEANUP_CANDIDATES.map(canonicalPath));
 
 function contractRecord(value, keys, label) {
@@ -148,11 +151,13 @@ function cleanImports(bytes, removedNames) {
 export function planCleanup(map, ast, options, context = {}) {
     const reviewed = context.cleanupContract === undefined ? null : validateCleanupContract(map, context.cleanupContract, context);
     const keep = new Set(options.keepFiles.map(canonicalPath));
-    const names = [...(options.editor ? EDITOR_FILES : []), ...(options.development ? DEVELOPMENT_FILES : [])]
+    const names = [...(options.editor ? EDITOR_FILES : []), ...(options.development ? DEVELOPMENT_FILES : []), ...(options.editorData ? EDITOR_DATA_FILES : [])]
         .filter(name => !keep.has(canonicalPath(name)) && map.has(name));
     if (!names.length) return { names, imports: null };
     if (reviewed) for (const name of names) assert(reviewed.has(canonicalPath(name)), 'Cleanup contract does not review selected candidate ' + name);
     validateReferences(ast, names, reviewed !== null);
+    // A removed manifest needs no row updates.
+    if (names.some(name => canonicalPath(name) === 'WAR3MAP.IMP')) return { names, imports: null };
     const before = map.read('war3map.imp');
     const after = cleanImports(before, names);
     return { names, imports: after && !after.equals(before) ? after : null };

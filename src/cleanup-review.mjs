@@ -44,7 +44,7 @@ function snapshot(input, label) {
 
 function reviewedOptions(contract) {
     const reviewed = new Set(contract.files.map(file => canonicalPath(file.path)));
-    return { editor: true, development: true, keepFiles: CLEANUP_CANDIDATES.filter(name => !reviewed.has(canonicalPath(name))) };
+    return { editor: true, development: true, editorData: true, keepFiles: CLEANUP_CANDIDATES.filter(name => !reviewed.has(canonicalPath(name))) };
 }
 
 function packed(value, block) {

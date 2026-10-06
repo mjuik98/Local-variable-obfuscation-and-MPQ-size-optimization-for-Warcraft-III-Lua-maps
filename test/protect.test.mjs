@@ -214,7 +214,7 @@ test('configuration is validated and fresh defaults remain unchanged after calle
     const resolved = resolveConfig({ compression: { levels: [9, 6, 9] }, cleanup: { keepFiles: ['war3map.wtg'] } });
     assert.deepEqual(resolved.compression.levels, [6, 9]);
     resolved.cleanup.keepFiles.push('other.bin'); resolved.lua.keepLocals.push('counter');
-    assert.deepEqual(resolveConfig().cleanup, { editor: false, development: false, keepFiles: [] });
+    assert.deepEqual(resolveConfig().cleanup, { editor: false, development: false, editorData: false, listfile: false, keepFiles: [] });
     assert.deepEqual(resolveConfig().lua.keepLocals, []);
     for (const value of [null, [], { unknown: true }, { lua: { typo: true } }, { cleanup: { editor: 1 } }, { compression: { levels: [] } }, { compression: { levels: [10] } }, { cleanup: { keepFiles: ['bad\0path'] } }]) {
         assert.throws(() => resolveConfig(value));

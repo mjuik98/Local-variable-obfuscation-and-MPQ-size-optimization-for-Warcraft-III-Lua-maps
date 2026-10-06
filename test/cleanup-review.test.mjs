@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { reviewCleanupContract } from '../src/cleanup-review.mjs';
-import { CLEANUP_CANDIDATES, planCleanup, validateCleanupContract } from '../src/cleanup.mjs';
+import { planCleanup, validateCleanupContract } from '../src/cleanup.mjs';
 import { parseLua } from '../src/lua.mjs';
 import { openMap } from '../src/mpq.mjs';
 import { createLuaMap, createImports, DEFAULT_LUA } from './map-fixture.mjs';
 import { mutateTestMap } from './mpq-fixture.mjs';
+
+// The editor and development candidates; editor data has its own tests.
+const CLEANUP_CANDIDATES = ['war3map.wtg', 'war3map.wct', 'lotkt-object-history.json', 'lotkt-object-receipt.json'];
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 

@@ -49,13 +49,13 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     onProgress('lua');
     const vm = transformVm(code, { functions: config.lua.vmFunctions, seed: config.lua.seed }, { prepared, prepareOutput: true });
     const luaInput = vm.prepared ?? prepared;
-    const transformed = luaInput.transform(config.lua, { prepareOutput: config.strings.enabled || config.lua.hideNatives });
+    const transformed = luaInput.transform(config.lua, { prepareOutput: config.strings.enabled || config.lua.hideNatives || config.lua.foldFourCC });
     const runtimeStrings = config.strings.enabled && config.strings.mode === 'runtime';
-    const natives = transformNatives(transformed.code, { enabled: config.lua.hideNatives, encryptNames: runtimeStrings },
+    const natives = transformNatives(transformed.code, { enabled: config.lua.hideNatives, encryptNames: runtimeStrings, foldFourCC: config.lua.foldFourCC },
         { prepared: transformed.prepared, prepareOutput: config.strings.enabled });
     const strings = transformStrings(natives.code, config.strings, { prepared: natives.prepared, seed: config.lua.seed, forced: natives.forcedLiterals });
     const finalScript = Buffer.from(strings.code);
-    if (vm.stats.virtualizedFunctions || natives.stats.hiddenNatives || strings.stats.mode === 'runtime') assertCompilableLua(finalScript);
+    if (vm.stats.virtualizedFunctions || natives.code !== transformed.code || strings.stats.mode === 'runtime') assertCompilableLua(finalScript);
     onProgress('archive');
     const replacements = [['war3map.lua', finalScript]];
     if (cleanup.imports) replacements.push(['war3map.imp', cleanup.imports]);
@@ -83,6 +83,11 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
         result = openMap(result).resector({ shift: sectorSizeShift, levels: config.compression.levels, strategies: config.compression.strategies });
         savings.record('sectors', '섹터 크기 변경·전체 재압축', result);
     }
+    // The listfile names entries for every earlier stage, so it goes last.
+    if (config.cleanup.listfile && openMap(result).has('(listfile)')) {
+        result = openMap(result).remove(['(listfile)']);
+        savings.record('listfile', '(listfile) 삭제', result, { rewrite: true });
+    }
     onProgress('verify');
     const verified = openMap(result);
     // Each transform reparses and verifies its emitted code. The final readback
@@ -90,9 +95,10 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     assert(verified.read('war3map.lua').equals(finalScript), 'Final script readback mismatch');
     for (const name of ['war3map.w3i', 'war3map.w3e']) assert(verified.read(name).equals(original.read(name)), 'Required map entry changed: ' + name);
     for (const name of cleanup.names) assert(!verified.has(name), 'Cleanup candidate is still present: ' + name);
+    if (config.cleanup.listfile) assert(!verified.has('(listfile)'), 'The MPQ listfile is still present');
     return {
         bytes: result,
-        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: cleanup.names, mapInfoVersion: info.version,
+        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], mapInfoVersion: info.version,
             lua: { ...transformed.stats, inputBytes: scriptBytes.length, outputBytes: finalScript.length }, natives: natives.stats, strings: strings.stats, vm: vm.stats,
             sectorSize: openMap(result).inspect().sectorSize, savings: savings.summary() },
     };

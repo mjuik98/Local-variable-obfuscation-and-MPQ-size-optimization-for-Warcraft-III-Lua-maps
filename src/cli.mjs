@@ -26,6 +26,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --keep-global <name>    Preserve a global name (repeatable)
 --hide-natives          Call engine functions through one local table (experimental)
 --no-hide-natives       Call engine functions by their global names
+--fold-fourcc           Replace FourCC calls on literal rawcodes with integers (experimental)
+--no-fold-fourcc        Keep FourCC calls
 --name-mode <id>        compact or seeded local names (default: compact)
 --seed <value>          Reproducible seed for strengthened transforms
 --string-mode <id>      escape or runtime; enable separately with --hide-strings
@@ -39,6 +41,9 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --no-cleanup            Preserve editor and development files
 --clean-editor          Remove the two known editor trigger files if references can be checked
 --clean-development     Remove the two known LoTKT development metadata files
+--clean-editor-data     Remove editor region, camera, sound data and the import manifest if references can be checked
+--remove-listfile       Remove the MPQ (listfile) after every other stage (experimental)
+--keep-listfile         Keep the MPQ (listfile)
 --cleanup-contract <file.json> Use a reviewed cleanup contract tied to the exact input
 --review-cleanup        Compare the previous reviewed map with this input; write no map
 --previous-input <map>  Previous input matched by --cleanup-contract
@@ -79,8 +84,8 @@ export function parseArguments(args) {
             unique(argument); parsed.noVm = true;
         } else if (argument === '--no-runtime-strings') {
             unique(argument); parsed.overrides.strings.mode = 'escape';
-        } else if (['--rename-globals', '--no-rename-globals', '--rename-fields', '--no-rename-fields', '--hide-natives', '--no-hide-natives'].includes(argument)) {
-            const key = argument.endsWith('globals') ? 'renameGlobals' : argument.endsWith('fields') ? 'renameFields' : 'hideNatives';
+        } else if (['--rename-globals', '--no-rename-globals', '--rename-fields', '--no-rename-fields', '--hide-natives', '--no-hide-natives', '--fold-fourcc', '--no-fold-fourcc'].includes(argument)) {
+            const key = argument.endsWith('globals') ? 'renameGlobals' : argument.endsWith('fields') ? 'renameFields' : argument.endsWith('fourcc') ? 'foldFourCC' : 'hideNatives';
             const opposite = argument.startsWith('--no-') ? '--' + argument.slice(5) : '--no-' + argument.slice(2);
             assert(!seen.has(opposite), argument + ' conflicts with ' + opposite);
             unique(argument); parsed.overrides.lua[key] = !argument.startsWith('--no-');
@@ -96,9 +101,12 @@ export function parseArguments(args) {
         } else if (argument === '--no-minify' || argument === '--no-rename') {
             unique(argument); parsed.overrides.lua[argument === '--no-minify' ? 'minify' : 'renameLocals'] = false;
         } else if (argument === '--no-cleanup') {
-            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false });
-        } else if (argument === '--clean-development' || argument === '--clean-editor') {
-            unique(argument); parsed.overrides.cleanup[argument === '--clean-editor' ? 'editor' : 'development'] = true;
+            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false, editorData: false });
+        } else if (argument === '--clean-development' || argument === '--clean-editor' || argument === '--clean-editor-data') {
+            unique(argument); parsed.overrides.cleanup[argument === '--clean-editor' ? 'editor' : argument === '--clean-editor-data' ? 'editorData' : 'development'] = true;
+        } else if (argument === '--remove-listfile' || argument === '--keep-listfile') {
+            assert(!seen.has('--remove-listfile') && !seen.has('--keep-listfile'), '--remove-listfile conflicts with --keep-listfile');
+            unique(argument); parsed.overrides.cleanup.listfile = argument === '--remove-listfile';
         } else if (argument === '--no-compress') {
             unique(argument); parsed.overrides.compression.enabled = false;
         } else if (argument === '--hide-strings' || argument === '--no-hide-strings') {
@@ -114,7 +122,7 @@ export function parseArguments(args) {
             parsed.input = argument;
         }
     }
-    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor'))), '--no-cleanup conflicts with cleanup options');
+    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data'))), '--no-cleanup conflicts with cleanup options');
     assert(!(seen.has('--hide-strings') && seen.has('--no-hide-strings')), '--hide-strings conflicts with --no-hide-strings');
     assert(!(seen.has('--string-mode') && seen.has('--no-runtime-strings')), '--string-mode conflicts with --no-runtime-strings');
     if (!parsed.help) {
@@ -156,7 +164,7 @@ export function run(args, { stdout = process.stdout, stderr = process.stderr } =
         stdout.write('Map bytes: ' + result.summary.inputBytes + ' -> ' + result.summary.outputBytes + '; local names changed: ' + result.summary.lua.renamedLocals + '; strings hidden: ' + result.summary.strings.encodedLiterals + '; string mode: ' + (result.summary.strings.mode ?? result.config.strings.mode) + '; VM functions: ' + (result.summary.vm?.virtualizedFunctions ?? 0) + '; files removed: ' + result.summary.removedFiles.length + '\n');
         const lua = result.summary.lua;
         stdout.write('Global names changed: ' + (lua.renamedGlobals ?? 0) + '; fields changed: ' + (lua.renamedFields ?? 0) + ' in ' + (lua.closedTables ?? 0) +
-            ' closed tables; engine functions hidden: ' + (result.summary.natives?.hiddenNatives ?? 0) + '; MPQ sector size: ' + result.summary.sectorSize + '\n');
+            ' closed tables; engine functions hidden: ' + (result.summary.natives?.hiddenNatives ?? 0) + '; Lua library functions hidden: ' + (result.summary.natives?.hiddenLibraryFunctions ?? 0) + '; FourCC folded: ' + (result.summary.natives?.foldedFourCC ?? 0) + '; MPQ sector size: ' + result.summary.sectorSize + '\n');
         if (options.details) stdout.write(JSON.stringify(result.summary.savings, null, 2) + '\n');
         stdout.write('Warcraft III gameplay, multiplayer synchronization and performance require separate game testing.\n');
         return 0;

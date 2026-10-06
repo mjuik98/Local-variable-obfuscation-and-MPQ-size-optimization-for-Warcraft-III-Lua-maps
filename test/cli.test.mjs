@@ -375,3 +375,15 @@ test('CLI enables or disables global, field and native options and selects a sec
         assert.throws(() => parseArguments(['--show-settings', ...options]), options.join(' '));
     }
 });
+
+test('CLI toggles FourCC folding, editor data cleanup and listfile removal', () => {
+    const parsed = parseArguments(['--show-settings', '--fold-fourcc', '--clean-editor-data', '--remove-listfile']);
+    assert.equal(parsed.overrides.lua.foldFourCC, true);
+    assert.deepEqual(parsed.overrides.cleanup, { editorData: true, listfile: true });
+    const kept = parseArguments(['--show-settings', '--preset', 'maximum', '--no-fold-fourcc', '--keep-listfile', '--no-cleanup']);
+    assert.equal(kept.overrides.lua.foldFourCC, false);
+    assert.deepEqual(kept.overrides.cleanup, { listfile: false, editor: false, development: false, editorData: false });
+    for (const options of [['--fold-fourcc', '--no-fold-fourcc'], ['--remove-listfile', '--keep-listfile'], ['--clean-editor-data', '--no-cleanup'], ['--clean-editor-data', '--clean-editor-data']]) {
+        assert.throws(() => parseArguments(['--show-settings', ...options]), options.join(' '));
+    }
+});

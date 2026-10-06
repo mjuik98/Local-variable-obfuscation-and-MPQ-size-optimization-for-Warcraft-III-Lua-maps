@@ -34,9 +34,9 @@ const presets = [
     },
     {
         id: 'maximum', label: '최대 보호',
-        description: '보호 강화에 더해 정적으로 확인된 전역·닫힌 테이블 필드 이름 변경과 엔진 함수 호출 숨김을 적용합니다. 모두 게임 검증이 필요한 실험 옵션입니다. 섹터 크기 변경과 파일 정리는 별도로 켭니다.',
+        description: '보호 강화에 더해 정적으로 확인된 전역·닫힌 테이블 필드 이름 변경, 엔진·Lua 라이브러리 함수 호출 숨김, FourCC 상수 치환과 (listfile) 삭제를 적용합니다. 모두 게임 검증이 필요한 실험 옵션입니다. 섹터 크기 변경과 파일 정리는 별도로 켭니다.',
         checkOnly: false, requiresCleanupContract: false,
-        settings: { lua: { minify: true, renameLocals: true, nameMode: 'seeded', vmFunctions: [], renameGlobals: true, renameFields: true, hideNatives: true }, strings: { enabled: true, mode: 'runtime' }, cleanup: { editor: false, development: false }, compression: { enabled: true, levels: [6, 9] } },
+        settings: { lua: { minify: true, renameLocals: true, nameMode: 'seeded', vmFunctions: [], renameGlobals: true, renameFields: true, hideNatives: true, foldFourCC: true }, strings: { enabled: true, mode: 'runtime' }, cleanup: { editor: false, development: false, listfile: true }, compression: { enabled: true, levels: [6, 9] } },
     },
 ];
 const appendKeys = { lua: ['keepLocals', 'vmFunctions', 'keepGlobals'], strings: ['keep'], cleanup: ['keepFiles'], compression: ['excludeFiles'] };
@@ -73,6 +73,6 @@ export function resolveSettings({ preset = null, configuration = {}, overrides =
     }
     if (noVm) merged.lua.vmFunctions = [];
     const config = resolveConfig(merged), info = selected ? metadata(selected) : null;
-    if (info) info.requiresCleanupContract = selected.requiresCleanupContract && (config.cleanup.editor || config.cleanup.development);
+    if (info) info.requiresCleanupContract = selected.requiresCleanupContract && (config.cleanup.editor || config.cleanup.development || config.cleanup.editorData);
     return { config, preset: info };
 }

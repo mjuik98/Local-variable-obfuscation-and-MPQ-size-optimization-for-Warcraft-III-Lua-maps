@@ -24,7 +24,7 @@ namespace WarcraftLuaProtectorDesktop
 
     internal sealed class AdvancedSettingsForm : Form
     {
-        private CheckBox minify, rename, renameGlobals, renameFields, hideNatives, cleanEditor, cleanDevelopment, compress;
+        private CheckBox minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, compress;
         private CheckBox disableVm;
         private ComboBox nameMode, stringMode, sectorSize;
         private TextBox seed;
@@ -38,9 +38,9 @@ namespace WarcraftLuaProtectorDesktop
         public AdvancedSettingsForm(IDictionary<string, object> effective, IDictionary<string, object> extra, bool noVm)
         {
             Text = "고급 설정"; Font = new Font("맑은 고딕", 9F); AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(840, 880); MinimumSize = new Size(800, 820); StartPosition = FormStartPosition.CenterParent;
+            ClientSize = new Size(860, 920); MinimumSize = new Size(820, 860); StartPosition = FormStartPosition.CenterParent;
             TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 1, RowCount = 6 };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 160)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 152)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48)); Controls.Add(layout);
             layout.Controls.Add(new Label { Text = "여기서 적용한 옵션은 프리셋과 설정 JSON보다 우선합니다.\r\n목록은 JSON의 기존 항목에 추가됩니다. VM 해제는 JSON의 선택 목록도 비웁니다.\r\n시드 이름 · 런타임 문자열 · VM · 전역/필드 이름 · 엔진 함수 숨김 · 섹터 크기는 실험 옵션이며 실제 게임 검증이 필요합니다.", Dock = DockStyle.Fill }, 0, 0);
             FlowLayoutPanel flags = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true };
@@ -48,11 +48,14 @@ namespace WarcraftLuaProtectorDesktop
             rename = Flag("local 이름 변경", EnabledValue(effective, "lua", "renameLocals"));
             renameGlobals = Flag("전역 이름 변경 (실험)", EnabledValue(effective, "lua", "renameGlobals"));
             renameFields = Flag("닫힌 테이블 필드 이름 변경 (실험)", EnabledValue(effective, "lua", "renameFields"));
-            hideNatives = Flag("엔진 함수 호출 숨김 (실험)", EnabledValue(effective, "lua", "hideNatives"));
+            hideNatives = Flag("엔진 · Lua 라이브러리 함수 호출 숨김 (실험)", EnabledValue(effective, "lua", "hideNatives"));
+            foldFourCC = Flag("FourCC 상수 치환 (실험)", EnabledValue(effective, "lua", "foldFourCC"));
             cleanEditor = Flag("에디터 파일 정리", EnabledValue(effective, "cleanup", "editor"));
             cleanDevelopment = Flag("개발 파일 정리", EnabledValue(effective, "cleanup", "development"));
+            cleanEditorData = Flag("에디터 데이터 정리 (영역 · 카메라 · 사운드 · import 목록)", EnabledValue(effective, "cleanup", "editorData"));
+            removeListfile = Flag("(listfile) 삭제 (실험)", EnabledValue(effective, "cleanup", "listfile"));
             compress = Flag("파일 재압축", EnabledValue(effective, "compression", "enabled"));
-            foreach (CheckBox check in new CheckBox[] { minify, rename, renameGlobals, renameFields, hideNatives, cleanEditor, cleanDevelopment, compress }) flags.Controls.Add(check);
+            foreach (CheckBox check in new CheckBox[] { minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, compress }) flags.Controls.Add(check);
             flags.Controls.Add(new Label { Text = "Preloader를 사용하는 맵은 정리할 때 입력에 맞는 검토 계약이 필요합니다.\r\n메인 작업 화면의 검토 계약 → 찾아보기에서 선택하세요. 계약이 없으면 정리 옵션을 해제하세요.", AutoSize = true, MaximumSize = new Size(750, 0), Margin = new Padding(4, 8, 4, 0) }); layout.Controls.Add(flags, 0, 1);
             TableLayoutPanel transforms = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 4 };
             transforms.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90)); transforms.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); transforms.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90)); transforms.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -130,9 +133,9 @@ namespace WarcraftLuaProtectorDesktop
             List<string> chosenStrategies = new List<string>(); for (int i = 0; i < strategies.Items.Count; i++) if (strategies.GetItemChecked(i)) chosenStrategies.Add(StrategyIds[i]);
             return new Dictionary<string, object> {
                 { "lua", new Dictionary<string, object> { { "minify", minify.Checked }, { "renameLocals", rename.Checked }, { "keepLocals", keptLocals }, { "nameMode", nameMode.SelectedIndex == 1 ? "seeded" : "compact" }, { "seed", seed.Text }, { "vmFunctions", selectedVm },
-                    { "renameGlobals", renameGlobals.Checked }, { "renameFields", renameFields.Checked }, { "hideNatives", hideNatives.Checked }, { "keepGlobals", keptGlobals } } },
+                    { "renameGlobals", renameGlobals.Checked }, { "renameFields", renameFields.Checked }, { "hideNatives", hideNatives.Checked }, { "foldFourCC", foldFourCC.Checked }, { "keepGlobals", keptGlobals } } },
                 { "strings", new Dictionary<string, object> { { "keep", keptStrings }, { "mode", stringMode.SelectedIndex == 1 ? "runtime" : "escape" } } },
-                { "cleanup", new Dictionary<string, object> { { "editor", cleanEditor.Checked }, { "development", cleanDevelopment.Checked }, { "keepFiles", keptFiles } } },
+                { "cleanup", new Dictionary<string, object> { { "editor", cleanEditor.Checked }, { "development", cleanDevelopment.Checked }, { "editorData", cleanEditorData.Checked }, { "listfile", removeListfile.Checked }, { "keepFiles", keptFiles } } },
                 { "compression", new Dictionary<string, object> { { "enabled", compress.Checked }, { "levels", chosenLevels.ToArray() }, { "strategies", chosenStrategies.ToArray() }, { "excludeFiles", excludedFiles }, { "sectorSizeShift", sectorSize.SelectedIndex == 0 ? null : (object)(sectorSize.SelectedIndex + 2) } } }
             };
         }
@@ -356,7 +359,7 @@ namespace WarcraftLuaProtectorDesktop
             presetBox.Items.Add(new PresetItem { Id = "protect", Label = "기본 보호", Description = "Lua 주석·공백 정리와 local 이름 변경을 적용합니다. 파일 정리는 기본적으로 끕니다." });
             presetBox.Items.Add(new PresetItem { Id = "distribution", Label = "배포 준비", Description = "Lua 기본 보호와 알려진 에디터·개발 파일 정리를 적용합니다. 파일 정리를 켜면 검토 계약이 필요합니다.", RequiresCleanupContract = true });
             presetBox.Items.Add(new PresetItem { Id = "hardened", Label = "보호 강화", Description = "시드 이름과 런타임 문자열 복원을 적용합니다. VM 함수는 직접 지정하며 게임 검증이 필요한 실험 옵션입니다. 파일 정리는 기본적으로 끕니다." });
-            presetBox.Items.Add(new PresetItem { Id = "maximum", Label = "최대 보호", Description = "보호 강화에 더해 전역·닫힌 테이블 필드 이름 변경과 엔진 함수 호출 숨김을 적용합니다. 게임 검증이 필요한 실험 옵션입니다." });
+            presetBox.Items.Add(new PresetItem { Id = "maximum", Label = "최대 보호", Description = "보호 강화에 더해 전역·필드 이름 변경, 엔진·라이브러리 함수 호출 숨김, FourCC 치환과 (listfile) 삭제를 적용합니다. 게임 검증이 필요한 실험 옵션입니다." });
             presetBox.SelectedIndex = 2;
         }
         private PresetItem SelectedPreset() { return presetBox.SelectedItem as PresetItem; }
@@ -623,8 +626,8 @@ namespace WarcraftLuaProtectorDesktop
             string mode = TextValue(strings, "mode"); if (mode.Length > 0) report.AppendLine("문자열 모드: " + mode + (mode == "runtime" ? " · 고유 복원 문자열 " + NumberValue(strings, "uniqueRuntimeLiterals") + "개 (실험)" : ""));
             report.AppendLine("VM 함수: " + NumberValue(vm, "virtualizedFunctions") + "개" + (NumberValue(vm, "virtualizedFunctions") > 0 ? " · 명령 " + NumberValue(vm, "instructions") + "개 (실험 · 게임 검증 필요)" : ""));
             IDictionary<string, object> natives = Value(summary, "natives") as IDictionary<string, object>;
-            if (Value(lua, "renamedGlobals") != null || Value(lua, "renamedFields") != null || NumberValue(natives, "hiddenNatives") > 0)
-                report.AppendLine("전역 이름 변경: " + NumberValue(lua, "renamedGlobals") + "개   필드 이름 변경: " + NumberValue(lua, "renamedFields") + "개 (닫힌 테이블 " + NumberValue(lua, "closedTables") + "개)   엔진 함수 숨김: " + NumberValue(natives, "hiddenNatives") + "개 (실험)");
+            if (Value(lua, "renamedGlobals") != null || Value(lua, "renamedFields") != null || NumberValue(natives, "hiddenNatives") > 0 || NumberValue(natives, "hiddenLibraryFunctions") > 0 || NumberValue(natives, "foldedFourCC") > 0)
+                report.AppendLine("전역 이름 변경: " + NumberValue(lua, "renamedGlobals") + "개   필드 이름 변경: " + NumberValue(lua, "renamedFields") + "개 (닫힌 테이블 " + NumberValue(lua, "closedTables") + "개)   엔진 함수 숨김: " + NumberValue(natives, "hiddenNatives") + "개   라이브러리 함수 숨김: " + NumberValue(natives, "hiddenLibraryFunctions") + "개   FourCC 치환: " + NumberValue(natives, "foldedFourCC") + "개 (실험)");
             report.AppendLine("MPQ 섹터 크기: " + FormatBytes(Value(summary, "sectorSize")) + (NumberValue(summary, "sectorSize") != 4096 ? " (기본 4 KiB와 다름 · 실험 · 게임 검증 필요)" : ""));
             IDictionary<string, object> cache = Value(message, "cache") as IDictionary<string, object>; lastCacheReused = BoolValue(cache, "reused");
             if (cache != null) { report.AppendLine("검사 결과: " + (lastCacheReused ? "이전 검증 결과 재사용" : "새 검사") + " · 처리 시간 " + Seconds(Value(message, "elapsedMs"))); report.AppendLine(BoolValue(cache, "retained") ? "이 결과를 메모리에 보관했습니다. 같은 입력 · 설정의 다음 작업에서 재사용합니다." : "이 결과는 메모리에 보관하지 않습니다. 다음 작업에서 다시 검사합니다."); }
@@ -659,19 +662,19 @@ namespace WarcraftLuaProtectorDesktop
             text.AppendLine("이름 모드: " + TextValue(lua, "nameMode") + " / 재현 시드: " + TextValue(lua, "seed"));
             text.AppendLine("문자열 숨김: " + OnOff(BoolValue(strings, "enabled")) + " / 모드: " + TextValue(strings, "mode"));
             text.AppendLine("VM 선택 함수: " + JoinValues(Value(lua, "vmFunctions") as IList));
-            text.AppendLine("전역 이름 변경: " + OnOff(BoolValue(lua, "renameGlobals")) + " / 닫힌 테이블 필드 이름 변경: " + OnOff(BoolValue(lua, "renameFields")) + " / 엔진 함수 호출 숨김: " + OnOff(BoolValue(lua, "hideNatives")));
+            text.AppendLine("전역 이름 변경: " + OnOff(BoolValue(lua, "renameGlobals")) + " / 닫힌 테이블 필드 이름 변경: " + OnOff(BoolValue(lua, "renameFields")) + " / 엔진 · 라이브러리 함수 숨김: " + OnOff(BoolValue(lua, "hideNatives")) + " / FourCC 상수 치환: " + OnOff(BoolValue(lua, "foldFourCC")));
             object shift = Value(compression, "sectorSizeShift");
             text.AppendLine("MPQ 섹터 크기: " + (shift == null ? "입력 유지" : (512 << Convert.ToInt32(shift)) / 1024 + " KiB (전체 재압축)"));
             if (TextValue(lua, "nameMode") == "seeded" || (BoolValue(strings, "enabled") && TextValue(strings, "mode") == "runtime") || (Value(lua, "vmFunctions") as IList) != null && ((IList)Value(lua, "vmFunctions")).Count > 0 ||
-                BoolValue(lua, "renameGlobals") || BoolValue(lua, "renameFields") || BoolValue(lua, "hideNatives") || shift != null) text.AppendLine("보호 강화 · 섹터 크기 옵션은 실험 단계입니다. 실제 게임 동작과 멀티플레이 검증이 필요합니다.");
-            text.AppendLine("에디터 파일 정리: " + OnOff(BoolValue(cleanup, "editor")) + " / 개발 파일 정리: " + OnOff(BoolValue(cleanup, "development")));
+                BoolValue(lua, "renameGlobals") || BoolValue(lua, "renameFields") || BoolValue(lua, "hideNatives") || BoolValue(lua, "foldFourCC") || BoolValue(cleanup, "listfile") || shift != null) text.AppendLine("보호 강화 · 섹터 크기 옵션은 실험 단계입니다. 실제 게임 동작과 멀티플레이 검증이 필요합니다.");
+            text.AppendLine("에디터 파일 정리: " + OnOff(BoolValue(cleanup, "editor")) + " / 개발 파일 정리: " + OnOff(BoolValue(cleanup, "development")) + " / 에디터 데이터 정리: " + OnOff(BoolValue(cleanup, "editorData")) + " / (listfile) 삭제: " + OnOff(BoolValue(cleanup, "listfile")));
             text.AppendLine("파일 재압축: " + OnOff(BoolValue(compression, "enabled")) + " / 레벨: " + JoinValues(Value(compression, "levels") as IList) + " / 전략: " + JoinValues(Value(compression, "strategies") as IList));
             text.AppendLine("보존 local: " + JoinValues(Value(lua, "keepLocals") as IList));
             text.AppendLine("보존 전역: " + JoinValues(Value(lua, "keepGlobals") as IList));
             text.AppendLine("보존 문자열: " + serializer.Serialize(Value(strings, "keep")));
             text.AppendLine("정리에서 보존: " + JoinValues(Value(cleanup, "keepFiles") as IList));
             text.AppendLine("재압축 제외: " + JoinValues(Value(compression, "excludeFiles") as IList));
-            if (BoolValue(cleanup, "editor") || BoolValue(cleanup, "development")) text.AppendLine("파일 정리는 의존성 검사를 거칩니다. 동적 참조가 있는 맵은 메인 작업 화면에서 입력에 맞는 검토 계약을 선택하세요.");
+            if (BoolValue(cleanup, "editor") || BoolValue(cleanup, "development") || BoolValue(cleanup, "editorData")) text.AppendLine("파일 정리는 의존성 검사를 거칩니다. 동적 참조가 있는 맵은 메인 작업 화면에서 입력에 맞는 검토 계약을 선택하세요.");
             return text.ToString();
         }
         private static string JoinValues(IList values) { if (values == null || values.Count == 0) return "없음"; List<string> labels = new List<string>(); foreach (object value in values) labels.Add(Convert.ToString(value)); return String.Join(", ", labels.ToArray()); }
