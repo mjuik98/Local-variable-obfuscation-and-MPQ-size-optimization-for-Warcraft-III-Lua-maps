@@ -1,10 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 import { openMap, runMpqTests, crc32 } from '../src/mpq.mjs';
 import { createTestMap, inspectTestTables, mutateTestMap, fixtureHash } from './mpq-fixture.mjs';
 
+const ALL_STRATEGIES = ['default', 'filtered', 'huffman-only', 'rle', 'fixed'];
+
 test('original MPQ regressions remain intact', () => runMpqTests());
+
+test('explicit inspection names do not require decoding an opaque listfile', () => {
+    const source = createTestMap([['war3map.lua', Buffer.from('script')],
+        ['(listfile)', { data: Buffer.from('opaque listfile bytes'), flags: 0x80000100 }]]);
+    const map = openMap(source);
+    assert.equal(map.read('(listfile)', true), null);
+    assert.throws(() => map.inspect({ includeHashes: true }), /PKWARE/);
+    const metadata = map.inspect({ includeHashes: true, includeListedNames: false,
+        names: ['war3map.lua', 'WAR3MAP.LUA', '(listfile)', 'missing.bin'] });
+    assert.deepEqual(metadata.namedEntries.map(entry => entry.name), ['war3map.lua', '(listfile)']);
+    const scriptSlot = metadata.namedEntries[0].slots[0];
+    assert.equal(metadata.hashes[scriptSlot].blockIndex, 0);
+    assert.throws(() => map.inspect({ includeListedNames: 0 }), /includeListedNames/);
+});
+
+test('path lookup distinguishes both hashes and refreshes locale tombstones in a new reader', () => {
+    const source = createTestMap([['first.bin', Buffer.from('first')], ['second.bin', Buffer.from('second')],
+        ['localized.bin', Buffer.from('neutral')]], {
+        aliases: [{ name: 'alias.bin', target: 'localized.bin' }],
+        records: [{ name: 'localized.bin', locale: 0x412, data: Buffer.from('Korean') }],
+    });
+    const collision = mutateTestMap(source, ({ hashes }) => {
+        for (let p = 0; p < hashes.length; p += 16) {
+            if (hashes.readUInt32LE(p + 12) === 1) hashes.writeUInt32LE(fixtureHash('first.bin', 1), p);
+        }
+    });
+    const reader = openMap(collision);
+    assert.deepEqual(reader.read('FIRST.BIN'), Buffer.from('first'));
+    assert.equal(reader.read('second.bin'), null);
+    assert(reader.has('localized.bin'));
+    assert.throws(() => reader.read('localized.bin'), /Multiple locale/);
+    const removed = reader.remove(['LOCALIZED.BIN']), fresh = openMap(removed);
+    assert(!fresh.has('localized.bin'));
+    assert.deepEqual(fresh.read('alias.bin'), Buffer.from('neutral'));
+    assert(reader.has('localized.bin'), 'A new archive must not change an existing reader');
+    assert(reader.verifyPreserved(removed, { changedNames: ['(listfile)'], removedNames: ['localized.bin'] }));
+});
+
+test('raw encoding remains identical when level zero is the only or an extra candidate', () => {
+    const source = createTestMap([['file.bin', Buffer.from('original')]], { attributes: true });
+    for (const contents of [Buffer.alloc(0), Buffer.alloc(513, 65), Buffer.from('incompressible short')]) {
+        const raw = openMap(source).replace([['file.bin', contents]], { levels: [0], strategies: ALL_STRATEGIES });
+        const rawMap = openMap(raw);
+        assert.deepEqual(rawMap.read('file.bin'), contents);
+        assert.equal(rawMap.inspect().blocks[0].flags, 0x80000000);
+        const compressed = openMap(source).replace([['file.bin', contents]], { levels: [6, 9] });
+        assert.deepEqual(openMap(source).replace([['file.bin', contents]], { levels: [0, 6, 9] }), compressed);
+    }
+});
 
 test('explicit deletion preserves aliases, locale slots, unknown blocks and attribute indices', () => {
     const shared = Buffer.from('alias contents'), orphan = Buffer.from('unknown live bytes');
@@ -107,6 +159,58 @@ test('replacement updates listfile and checksums while preserving timestamps', (
     assert(map.verifyPreserved(result, { changedNames: ['war3map.lua', '(listfile)', 'new.bin'] }));
 });
 
+test('replacement bytes own their storage without copying or mutating the supplied input chunks', () => {
+    const source = createTestMap([['large.bin', Buffer.alloc(128 * 1024, 65)], ['keep.bin', Buffer.from('keep')]]);
+    const sourceSnapshot = Buffer.from(source), replacement = Buffer.from('new bytes '.repeat(7000)), replacementSnapshot = Buffer.from(replacement);
+    const result = openMap(source).replace([['large.bin', replacement]]);
+    assert.deepEqual(openMap(result).read('large.bin'), replacement);
+    assert.deepEqual(source, sourceSnapshot);
+    assert.deepEqual(replacement, replacementSnapshot);
+    result.fill(0);
+    assert.deepEqual(source, sourceSnapshot, 'Mutating the returned archive cannot mutate its input');
+    assert.deepEqual(replacement, replacementSnapshot, 'Mutating the returned archive cannot mutate replacement contents');
+});
+
+test('strategy candidates reduce mixed sectors while retaining the legacy default stream and exact decoded bytes', () => {
+    let state = 0x12345678;
+    const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state >>> 24; };
+    const parts = [Buffer.from(Array.from({ length: 512 }, () => 65 + random() % 4)),
+        Buffer.concat(Array.from({ length: 32 }, () => Buffer.alloc(16, random()))),
+        Buffer.from('Warcraft III Lua map protection '.repeat(20)).subarray(0, 512)];
+    const contents = Buffer.concat(parts), source = createTestMap([['mixed.bin', Buffer.from('original')]], { attributes: true });
+    const original = Buffer.from(source), map = openMap(source);
+    const legacy = map.replace([['mixed.bin', contents]], { levels: [6] });
+    assert.deepEqual(map.replace([['mixed.bin', contents]], { levels: [6], strategies: ['default'] }), legacy);
+    const expanded = map.replace([['mixed.bin', contents]], { levels: [6], strategies: ALL_STRATEGIES });
+    assert(expanded.length < legacy.length, 'Additional strategies must produce a real reduction on mixed sectors');
+    assert.deepEqual(map.replace([['mixed.bin', contents]], { levels: [6], strategies: [...ALL_STRATEGIES].reverse().concat('rle') }), expanded);
+    const legacyMap = openMap(legacy), expandedMap = openMap(expanded);
+    const sectorPayload = (bytes, archive) => {
+        const metadata = archive.inspect(), entry = metadata.blocks[0], start = metadata.archiveOffset + entry.offset;
+        assert.equal(entry.flags, 0x80000200, 'Only standard MPQ zlib sectors may be emitted');
+        assert.equal(metadata.sectorSize, 512);
+        return bytes.subarray(start, start + entry.packedSize);
+    };
+    const oldPayload = sectorPayload(legacy, legacyMap), newPayload = sectorPayload(expanded, expandedMap);
+    for (let index = 0; index < parts.length; index++) {
+        const oldSector = oldPayload.subarray(oldPayload.readUInt32LE(index * 4), oldPayload.readUInt32LE(index * 4 + 4));
+        const newSector = newPayload.subarray(newPayload.readUInt32LE(index * 4), newPayload.readUInt32LE(index * 4 + 4));
+        assert.deepEqual(oldSector, Buffer.concat([Buffer.from([2]), zlib.deflateSync(parts[index], { level: 6 })]), 'Default strategy must retain the old stream bytes');
+        assert(newSector.length <= oldSector.length);
+        assert.equal(newSector[0], 2);
+        assert.deepEqual(zlib.inflateSync(newSector.subarray(1)), parts[index]);
+    }
+    for (const strategy of ALL_STRATEGIES) {
+        const output = map.replace([['mixed.bin', contents]], { levels: [6, 9], strategies: [strategy] });
+        assert.deepEqual(openMap(output).read('mixed.bin'), contents);
+        assert(map.verifyPreserved(output, { changedNames: ['mixed.bin'] }));
+    }
+    assert.deepEqual(expandedMap.read('mixed.bin'), contents);
+    assert.deepEqual(expandedMap.optimize({ levels: [6], strategies: ALL_STRATEGIES }), expanded, 'Equal-size candidates must retain existing payload bytes');
+    assert.deepEqual(expandedMap.optimize({ levels: [6], strategies: ['fixed'] }), expanded, 'A larger strategy candidate must retain the smaller existing payload');
+    assert.deepEqual(source, original);
+});
+
 test('optimization compares sector compression candidates and preserves encrypted, aliased and unsupported payloads', () => {
     const compressible = Buffer.from('Warcraft III Lua map protection '.repeat(500));
     const source = createTestMap([
@@ -129,6 +233,10 @@ test('optimization compares sector compression candidates and preserves encrypte
     assert.deepEqual(after.optimize(), result, 'Repeated optimization is bytewise idempotent');
     assert.throws(() => after.replace([['alias-target.bin', Buffer.from('changed')]]), /Aliased/);
     assert.deepEqual(after.replace([['alias-target.bin', compressible]]), result, 'Identical alias replacement remains a no-op');
+    const expanded = before.optimize({ strategies: ALL_STRATEGIES });
+    assert(before.verifyPreserved(expanded, { changedNames: ['raw.bin', 'low.bin', '(listfile)'] }));
+    assert.deepEqual(openMap(expanded).read('vault.bin'), compressible);
+    assert.deepEqual(openMap(expanded).read('(attributes)'), before.read('(attributes)'), 'Recompression must preserve logical checksums and timestamps');
 });
 
 test('optimization is optional per named entry and preserves unsupported compression masks', () => {
@@ -147,7 +255,7 @@ test('optimization is optional per named entry and preserves unsupported compres
 test('incompressible replacement is stored raw without a larger sector table', () => {
     const entropy = Buffer.concat(Array.from({ length: 64 }, (_, i) => createHash('sha256').update(String(i)).digest()));
     const source = createTestMap([['raw.bin', Buffer.from('old')]]);
-    const result = openMap(source).replace([['raw.bin', entropy]]), map = openMap(result);
+    const result = openMap(source).replace([['raw.bin', entropy]], { strategies: ALL_STRATEGIES }), map = openMap(result);
     assert.deepEqual(map.read('raw.bin'), entropy);
     assert.equal(map.inspect().blocks[0].flags, 0x80000000);
     assert.equal(map.inspect().blocks[0].packedSize, entropy.length);
@@ -176,6 +284,10 @@ test('signed maps, reserved removal targets and invalid compression options are 
     assert.throws(() => openMap(source).remove(['(ATTRIBUTES)']), /Cannot remove/);
     assert.throws(() => openMap(source).replace([['(ATTRIBUTES)', Buffer.alloc(0)]]), /automatically/);
     assert.throws(() => openMap(source).optimize({ levels: [10] }), /Invalid zlib/);
+    for (const strategies of [null, [], 'default', [0], ['DEFAULT'], ['unknown'], ['default', null], new Array(1)]) {
+        assert.throws(() => openMap(source).optimize({ strategies }), /compression\.strategies/);
+        assert.throws(() => openMap(source).replace([], { strategies }), /compression\.strategies/);
+    }
     assert.throws(() => openMap(source).replace([['war3map.lua', Buffer.from('a')], ['WAR3MAP.LUA', Buffer.from('b')]]), /Duplicate MPQ/);
 });
 
@@ -185,4 +297,63 @@ test('automatic metadata updates cannot overwrite aliased listfile or attributes
     assert.throws(() => openMap(source).remove(['script.bin']), /Aliased/);
     const attributesAlias = createTestMap([['script.bin', Buffer.from('original')]], { attributes: true, aliases: [{ name: 'attrs-alias.bin', target: '(attributes)' }] });
     assert.throws(() => openMap(attributesAlias).replace([['script.bin', Buffer.from('changed')]]), /Aliased/);
+});
+
+test('archive headers are recognized only at Storm-aligned offsets with readable table sizes', () => {
+    const source = createTestMap([['file.bin', Buffer.from('aligned')]]);
+    assert.equal(openMap(source).inspect().archiveOffset, 512);
+    const unaligned = Buffer.concat([Buffer.from('HM3W'), source.subarray(512)]);
+    assert.throws(() => openMap(unaligned), /512-byte aligned/);
+    const shifted = Buffer.from(source); shifted.writeUInt16LE(24, 512 + 14);
+    assert.throws(() => openMap(shifted), /sector size shift/);
+    const oddHash = Buffer.from(source); oddHash.writeUInt32LE(48, 512 + 24);
+    assert.throws(() => openMap(oddHash), /power of two/);
+    const truncated = mutateTestMap(createTestMap([['file.bin', { data: Buffer.alloc(2000, 7), flags: 0x80000200 }]]), ({ blocks }) => {
+        blocks.writeUInt32LE(4000, 8);
+    });
+    assert.throws(() => openMap(truncated).read('file.bin'), /length mismatch|sector/);
+});
+
+test('a sector size change re-encodes every live block and keeps slots, sizes, encryption and attributes', () => {
+    const text = Buffer.from('local value = "repeated text block" -- '.repeat(400));
+    const source = createTestMap([
+        ['war3map.lua', { data: text, flags: 0x80000200 }],
+        ['vault\fixed.bin', { data: Buffer.from('fixed key '.repeat(300)), flags: 0x80030200 }],
+        ['plain.bin', { data: Buffer.from('encrypted plain key '.repeat(90)), flags: 0x80010200 }],
+        ['empty.bin', Buffer.alloc(0)],
+        ['shared.bin', Buffer.from('alias contents')],
+    ], { attributes: true, aliases: [{ name: 'alias.bin', target: 'shared.bin' }], records: [
+        { data: Buffer.from('unnamed unencrypted payload '.repeat(50)), flags: 0x80000200 },
+        { data: Buffer.from('gone'), flags: 0 },
+    ] });
+    const before = openMap(source), beforeInfo = before.inspect({ includeHashes: true });
+    const output = before.resector({ shift: 3, levels: [9] }), after = openMap(output), info = after.inspect({ includeHashes: true });
+    assert.equal(info.sectorSize, 4096);
+    assert.deepEqual(info.hashes, beforeInfo.hashes);
+    assert.equal(info.blockCount, beforeInfo.blockCount);
+    for (const name of ['war3map.lua', 'vault\fixed.bin', 'plain.bin', 'empty.bin', 'shared.bin', 'alias.bin', '(listfile)', '(attributes)']) {
+        assert.deepEqual(after.read(name), before.read(name), name);
+    }
+    beforeInfo.blocks.forEach((block, index) => {
+        const next = info.blocks[index];
+        assert.equal(next.size, block.size);
+        assert.equal(next.flags | 0x200, block.flags | 0x200);
+        if (!block.live) assert.deepEqual(next, block);
+    });
+    assert(info.blocks[1].flags & 0x30000, 'Fixed-key encryption must remain');
+    assert(output.length < source.length, 'Larger sectors must compress the repeated script better');
+    assert.deepEqual(openMap(output).resector({ shift: 3, levels: [9] }), output, 'Rebuilding with the same settings is reproducible');
+});
+
+test('a sector size change refuses unsupported shifts, encrypted unnamed blocks and opaque compression', () => {
+    const source = createTestMap([['file.bin', Buffer.from('content')]]);
+    assert.throws(() => openMap(source).resector({ shift: 2 }), /sector size shift/);
+    assert.throws(() => openMap(source).resector({ shift: 9 }), /sector size shift/);
+    const unnamed = createTestMap([['file.bin', Buffer.from('content')]], { records: [{ name: 'secret.bin', data: Buffer.from('secret data'), flags: 0x80010200 }] });
+    const withoutListing = mutateTestMap(unnamed, () => {});
+    const listless = createTestMap([['file.bin', Buffer.from('content')]], { listfile: false, records: [{ name: 'secret.bin', data: Buffer.from('secret data'), flags: 0x80010200 }] });
+    assert.ok(openMap(withoutListing).resector({ shift: 4 }));
+    assert.throws(() => openMap(listless).resector({ shift: 4 }), /known name/);
+    const opaque = createTestMap([['file.bin', { data: Buffer.from('opaque'), flags: 0x80000100 }]]);
+    assert.throws(() => openMap(opaque).resector({ shift: 4 }), /PKWARE|Unsupported MPQ block flags/);
 });

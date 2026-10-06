@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { normalizeCompressionStrategies, SUPPORTED_OUTPUT_SECTOR_SHIFTS } from './config.mjs';
 
+const zlibStrategies = Object.freeze({ default: zlib.constants.Z_DEFAULT_STRATEGY,
+    filtered: zlib.constants.Z_FILTERED, 'huffman-only': zlib.constants.Z_HUFFMAN_ONLY,
+    rle: zlib.constants.Z_RLE, fixed: zlib.constants.Z_FIXED });
 const crypt = new Uint32Array(1280);
 const mapStates = new WeakMap();
 const canonicalName = name => name.replaceAll('/', '\\').toUpperCase();
@@ -40,7 +44,14 @@ function transform(input, key, encrypt = false) {
     return bytes;
 }
 
+function fileKey(name, start, length, flags) {
+    let key = hash(name.split(/[\\/]/).pop(), 3);
+    if (flags & 0x20000) key = ((key + start) ^ length) >>> 0;
+    return key;
+}
+
 export function crc32(bytes) {
+    if (typeof zlib.crc32 === 'function') return zlib.crc32(bytes) >>> 0;
     let crc = 0xffffffff;
     for (const byte of bytes) {
         crc ^= byte;
@@ -49,18 +60,31 @@ export function crc32(bytes) {
     return (crc ^ 0xffffffff) >>> 0;
 }
 
+// Storm recognizes an archive header only at a 512-byte aligned offset. A
+// signature elsewhere, for example inside a prefix, is not the game's archive.
+export function findArchiveOffset(bytes) {
+    for (let position = 0; position + 4 <= bytes.length; position += 512) {
+        if (bytes.readUInt32LE(position) === 0x1a51504d) return position;
+    }
+    return -1;
+}
+
 export function openMap(input) {
     const bytes = Buffer.isBuffer(input) ? input : fs.readFileSync(input);
-    const offset = bytes.indexOf(Buffer.from([77, 80, 81, 26]));
-    assert(offset >= 0, 'MPQ header not found');
+    const offset = findArchiveOffset(bytes);
+    assert(offset >= 0, 'MPQ header not found at a 512-byte aligned offset');
     const header = bytes.subarray(offset, offset + 32);
     assert.equal(header.length, 32, 'Truncated MPQ header');
     assert.equal(header.readUInt16LE(12), 0, 'Only MPQ v0 archives are supported');
     assert.equal(header.readUInt32LE(4), 32, 'Unsupported MPQ header size');
     const archiveEnd = offset + header.readUInt32LE(8);
     assert.equal(archiveEnd, bytes.length, 'Archive has a trailer/signature; refusing to modify it');
-    const sectorSize = 512 * 2 ** header.readUInt16LE(14);
+    const sectorShift = header.readUInt16LE(14);
+    assert(sectorShift <= 23, 'Unsupported MPQ sector size shift: ' + sectorShift);
+    const sectorSize = 512 * 2 ** sectorShift;
     const hashCount = header.readUInt32LE(24), blockCount = header.readUInt32LE(28);
+    // Storm starts probing at hash & (count - 1); other table sizes are unreadable.
+    assert(hashCount > 0 && Number.isInteger(Math.log2(hashCount)), 'MPQ hash table size must be a nonzero power of two');
     function table(field, count, name) {
         const start = offset + header.readUInt32LE(field);
         assert(start >= offset + 32 && start + count * 16 <= archiveEnd, 'Invalid MPQ table');
@@ -68,15 +92,19 @@ export function openMap(input) {
     }
     const hashTable = table(16, hashCount, '(hash table)');
     const blockTable = table(20, blockCount, '(block table)');
+    // Tables are immutable for this reader. Index both path hashes once while
+    // retaining every matching slot, including distinct locale/alias records.
+    const pathSlots = new Map();
+    for (let p = 0; p < hashTable.length; p += 16) {
+        if (hashTable.readUInt32LE(p + 12) >= blockCount) continue;
+        const key = hashTable.readUInt32LE(p) + ':' + hashTable.readUInt32LE(p + 4);
+        const slots = pathSlots.get(key);
+        if (slots) slots.push(p);
+        else pathSlots.set(key, [p]);
+    }
 
     function matchingSlots(name) {
-        const a = hash(name, 1), b = hash(name, 2);
-        const matches = [];
-        for (let i = 0; i < hashCount; i++) {
-            const p = i * 16, index = hashTable.readUInt32LE(p + 12);
-            if (index < blockCount && hashTable.readUInt32LE(p) === a && hashTable.readUInt32LE(p + 4) === b) matches.push(p);
-        }
-        return matches;
+        return pathSlots.get(hash(name, 1) + ':' + hash(name, 2)) ?? [];
     }
     function indexOf(name) {
         const matches = matchingSlots(name);
@@ -96,44 +124,69 @@ export function openMap(input) {
             return true;
         });
     }
-    function inspect() {
+    function inspect({ includeHashes = false, includeListedNames = true, names = [] } = {}) {
+        assert(typeof includeListedNames === 'boolean', 'includeListedNames must be boolean');
+        assert(Array.isArray(names) && names.every(name => typeof name === 'string' && name.length > 0 && /^[\x20-\x7e]+$/.test(name)), 'Inspection names must be explicit ASCII MPQ paths');
         const references = new Uint32Array(blockCount);
         for (let i = 0; i < hashCount; i++) {
             const index = hashTable.readUInt32LE(i * 16 + 12);
             if (index < blockCount) references[index]++;
         }
-        return { formatVersion: 0, archiveOffset: offset, archiveSize: archiveEnd - offset,
+        const result = { formatVersion: 0, archiveOffset: offset, archiveSize: archiveEnd - offset,
             sectorSize, hashCount, blockCount, blocks: Array.from({ length: blockCount }, (_, index) => {
                 const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
                 return { index, offset: blockTable.readUInt32LE(p), packedSize: blockTable.readUInt32LE(p + 4),
                     size: blockTable.readUInt32LE(p + 8), flags, live: Boolean(flags & 0x80000000), hashReferences: references[index] };
             }) };
+        if (includeHashes) {
+            result.hashes = Array.from({ length: hashCount }, (_, slot) => {
+                const p = slot * 16;
+                return { slot, hashA: hashTable.readUInt32LE(p), hashB: hashTable.readUInt32LE(p + 4),
+                    localePlatform: hashTable.readUInt32LE(p + 8), blockIndex: hashTable.readUInt32LE(p + 12) };
+            });
+            const seen = new Set();
+            result.namedEntries = [...(includeListedNames ? listNames() : []), ...names].filter(name => {
+                const canonical = canonicalName(name);
+                if (seen.has(canonical) || !has(name)) return false;
+                seen.add(canonical); return true;
+            }).map(name => ({ name, slots: matchingSlots(name).map(p => p / 16) }));
+        }
+        return result;
     }
 
     function read(name, skipUnsupported = false) {
         const index = indexOf(name);
         if (index < 0) return null;
+        return readBlock(index, name, skipUnsupported);
+    }
+
+    // An unnamed block is decodable only when its key does not need a name.
+    function readBlock(index, name = null, skipUnsupported = false) {
+        const label = name ?? '#' + index;
         const p = index * 16, start = blockTable.readUInt32LE(p);
         const packed = blockTable.readUInt32LE(p + 4), length = blockTable.readUInt32LE(p + 8);
         const flags = blockTable.readUInt32LE(p + 12);
-        assert(flags & 0x80000000, 'Entry is not live: ' + name);
+        assert(flags & 0x80000000, 'Entry is not live: ' + label);
         // Opaque input files remain replaceable even when we cannot decode them
         // for the optional identical-content comparison.
         if (skipUnsupported && ((flags & (0x100 | 0x1000000)) ||
             ((flags & 0x10000) && !(flags & 0x200)))) return null;
-        assert.equal(flags & 0x100, 0, 'PKWARE compression is unsupported: ' + name);
+        assert.equal(flags & 0x100, 0, 'PKWARE compression is unsupported: ' + label);
         // Warcraft III ignores SINGLE_UNIT, unlike generic MPQ readers.
         // Accepting it here would let a self-readable but unplayable map pass validation.
-        assert.equal(flags & 0x1000000, 0, 'Warcraft III does not support single-unit MPQ entries: ' + name);
-        assert(offset + start + packed <= archiveEnd, 'Entry outside archive: ' + name);
+        assert.equal(flags & 0x1000000, 0, 'Warcraft III does not support single-unit MPQ entries: ' + label);
+        assert(offset + start + packed <= archiveEnd, 'Entry outside archive: ' + label);
         const data = bytes.subarray(offset + start, offset + start + packed);
-        let key = hash(name.split(/[\\/]/).pop(), 3);
-        if (flags & 0x20000) key = ((key + start) ^ length) >>> 0;
+        let key = 0;
+        if (flags & 0x10000) {
+            assert(name !== null, 'Encrypted MPQ block has no known name: ' + label);
+            key = fileKey(name, start, length, flags);
+        }
         function unpack(chunk, expected) {
             if (chunk.length === expected) return chunk;
-            assert(flags & 0x200, 'Uncompressed length mismatch: ' + name);
+            assert(flags & 0x200, 'Uncompressed length mismatch: ' + label);
             if (skipUnsupported && chunk[0] !== 2) return null;
-            assert.equal(chunk[0], 2, 'Unsupported compression mask: ' + name);
+            assert.equal(chunk[0], 2, 'Unsupported compression mask: ' + label);
             const result = zlib.inflateSync(chunk.subarray(1), { maxOutputLength: expected });
             assert.equal(result.length, expected);
             return result;
@@ -144,6 +197,7 @@ export function openMap(input) {
             return data;
         }
         const count = Math.ceil(length / sectorSize), tableSize = (count + 1) * 4;
+        assert(tableSize <= data.length, 'Truncated MPQ sector table: ' + label);
         const sectors = flags & 0x10000 ? transform(data.subarray(0, tableSize), (key - 1) >>> 0) : data.subarray(0, tableSize);
         const chunks = [];
         for (let i = 0; i < count; i++) {
@@ -155,7 +209,9 @@ export function openMap(input) {
             if (raw === null) return null;
             chunks.push(raw);
         }
-        return Buffer.concat(chunks);
+        const result = Buffer.concat(chunks);
+        assert.equal(result.length, length, 'Decoded MPQ entry length mismatch: ' + label);
+        return result;
     }
 
     function validateArchive() {
@@ -250,16 +306,21 @@ export function openMap(input) {
         return result;
     }
 
-    function encode(contents, levels) {
-        const count = Math.ceil(contents.length / sectorSize);
+    // Encrypted blocks keep a sector table even when no sector compresses,
+    // since encrypted raw sector data cannot be read back.
+    function encode(contents, levels, strategies, size = sectorSize, keepSectors = false) {
+        const count = Math.ceil(contents.length / size);
         const sectors = Buffer.alloc((count + 1) * 4), chunks = [sectors];
         let cursor = sectors.length;
         for (let i = 0; i < count; i++) {
             sectors.writeUInt32LE(cursor, i * 4);
-            const raw = contents.subarray(i * sectorSize, (i + 1) * sectorSize);
+            const raw = contents.subarray(i * size, (i + 1) * size);
             let best = raw;
-            for (const level of levels) {
-                const candidate = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw, { level })]);
+            for (const level of levels) for (const strategy of strategies) {
+                // Level zero adds a zlib wrapper and stored-block framing, so
+                // it can never beat the already available raw sector.
+                if (level === 0) continue;
+                const candidate = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw, { level, strategy: zlibStrategies[strategy] })]);
                 if (candidate.length < best.length) best = candidate;
             }
             chunks.push(best);
@@ -267,7 +328,7 @@ export function openMap(input) {
         }
         sectors.writeUInt32LE(cursor, count * 4);
         const compressed = Buffer.concat(chunks);
-        return compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
+        return keepSectors || compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
     }
     function compressionLevels(levels = [6, 9]) {
         assert(Array.isArray(levels) && levels.length > 0 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'Invalid zlib compression levels');
@@ -275,7 +336,8 @@ export function openMap(input) {
     }
     function replace(entries, options = {}) {
         validateArchive();
-        const levels = compressionLevels(options.levels), encoded = new Map(), metadata = inspect();
+        const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
+        const encoded = new Map(), metadata = inspect();
         const requested = [...entries];
         assert(requested.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && entry[0].length > 0 && !/[\0\r\n]/.test(entry[0])), 'Invalid MPQ replacement entries');
         assert.equal(new Set(requested.map(([name]) => canonicalName(name))).size, requested.length, 'Duplicate MPQ paths');
@@ -289,7 +351,7 @@ export function openMap(input) {
             assert(Buffer.isBuffer(contents), 'Replacement contents must be a Buffer');
             const index = indexOf(name), identical = read(name, true)?.equals(contents);
             if (identical && !options.recompress) { changes.delete(name); continue; }
-            const candidate = encode(contents, levels);
+            const candidate = encode(contents, levels, strategies);
             if (identical && candidate.data.length >= blockTable.readUInt32LE(index * 16 + 4)) { changes.delete(name); continue; }
             if (index >= 0) {
                 const references = metadata.blocks[index].hashReferences;
@@ -366,12 +428,14 @@ export function openMap(input) {
             const index = indexOf(name);
             if (index >= 0) assert.equal(metadata.blocks[index].hashReferences, 1, 'Aliased entries cannot be replaced independently: ' + name);
         }
-        const blocks = Buffer.alloc(nextBlock * 16), chunks = [Buffer.from(bytes)];
+        // Buffer.concat copies every chunk into the new archive. Keep the source
+        // as a read-only chunk instead of allocating an intermediate full copy.
+        const blocks = Buffer.alloc(nextBlock * 16), chunks = [bytes];
         blockTable.copy(blocks);
         let cursor = bytes.length;
         for (const [name, contents] of changes) {
             // Warcraft requires sector tables; single-unit compressed entries are never emitted.
-            const { data, flags } = encoded.get(name) ?? encode(contents, levels);
+            const { data, flags } = encoded.get(name) ?? encode(contents, levels, strategies);
             const p = indices.get(name) * 16;
             blocks.writeUInt32LE(cursor - offset, p);
             blocks.writeUInt32LE(data.length, p + 4);
@@ -467,7 +531,8 @@ export function openMap(input) {
     }
     function optimize(options = {}) {
         validateArchive();
-        const levels = compressionLevels(options.levels), replacements = new Map(), metadata = inspect();
+        const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
+        const replacements = new Map(), metadata = inspect();
         const names = options.names ?? listNames();
         assert(Array.isArray(names) && names.every(name => typeof name === 'string'), 'Invalid MPQ optimization names');
         const seen = new Set();
@@ -481,10 +546,80 @@ export function openMap(input) {
             const contents = read(name, true);
             if (contents) replacements.set(name, contents);
         }
-        const candidate = replace(replacements, { levels, recompress: true });
+        const candidate = replace(replacements, { levels, strategies, recompress: true });
         const output = candidate.length < bytes.length ? candidate : compact();
         verifyPreserved(output, { changedNames: [...replacements.keys()] });
         return output;
+    }
+    // Re-encode every live block for another archive sector size. Contents,
+    // hash/locale slots, block indices, sizes and encryption are kept; only
+    // offsets, packed sizes and the compression bit may change. A block must be
+    // decodable: an encrypted block needs exactly one known name. Warcraft III
+    // support for a non-default sector size requires an in-game check.
+    function resector(options = {}) {
+        const live = validateArchive();
+        const shift = options.shift;
+        assert(SUPPORTED_OUTPUT_SECTOR_SHIFTS.includes(shift), 'MPQ sector size shift must be one of ' + SUPPORTED_OUTPUT_SECTOR_SHIFTS.join(', '));
+        const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
+        const size = 512 * 2 ** shift, metadata = inspect(), names = new Map();
+        for (const name of [...listNames(), '(listfile)', '(attributes)']) {
+            for (const p of matchingSlots(name)) {
+                const index = hashTable.readUInt32LE(p + 12);
+                if (index < blockCount && !names.has(index)) names.set(index, name);
+            }
+        }
+        const entries = live.map(({ index }) => {
+            const flags = blockTable.readUInt32LE(index * 16 + 12), name = names.get(index) ?? null, label = name ?? '#' + index;
+            assert.equal(flags & ~0x80030200, 0, 'Unsupported MPQ block flags for a sector size change: ' + label);
+            if (flags & 0x10000) assert(name !== null && metadata.blocks[index].hashReferences === 1, 'An encrypted MPQ block needs exactly one known name for a sector size change: ' + label);
+            const contents = readBlock(index, name), encoded = encode(contents, levels, strategies, size, Boolean(flags & 0x10000));
+            return { index, name, contents, data: encoded.data, flags: ((flags & ~0x200) | (encoded.flags & 0x200)) >>> 0 };
+        });
+        const blocks = Buffer.from(blockTable), chunks = [bytes.subarray(0, offset + 32)];
+        let cursor = 32;
+        for (const entry of entries) {
+            let data = entry.data;
+            if (entry.flags & 0x10000) {
+                // FIX_KEY includes the new MPQ-relative offset of the block.
+                const key = fileKey(entry.name, cursor, entry.contents.length, entry.flags);
+                const count = Math.ceil(entry.contents.length / size), table = data.subarray(0, (count + 1) * 4);
+                const parts = [transform(table, (key - 1) >>> 0, true)];
+                for (let i = 0; i < count; i++) parts.push(transform(data.subarray(table.readUInt32LE(i * 4), table.readUInt32LE(i * 4 + 4)), (key + i) >>> 0, true));
+                data = Buffer.concat(parts);
+            }
+            const p = entry.index * 16;
+            blocks.writeUInt32LE(cursor, p);
+            blocks.writeUInt32LE(data.length, p + 4);
+            blocks.writeUInt32LE(entry.flags, p + 12);
+            chunks.push(data);
+            cursor += data.length;
+        }
+        const hashOffset = cursor, blockOffset = hashOffset + hashTable.length, archiveSize = blockOffset + blocks.length;
+        assert(archiveSize <= 0xffffffff, 'MPQ v0 size limit exceeded');
+        chunks.push(transform(hashTable, hash('(hash table)', 3), true), transform(blocks, hash('(block table)', 3), true));
+        const result = Buffer.concat(chunks);
+        result.writeUInt32LE(archiveSize, offset + 8);
+        result.writeUInt16LE(shift, offset + 14);
+        result.writeUInt32LE(hashOffset, offset + 16);
+        result.writeUInt32LE(blockOffset, offset + 20);
+        const other = mapStates.get(openMap(result));
+        other.validateArchive();
+        assert.equal(other.offset, offset, 'MPQ prefix offset changed');
+        assert(other.bytes.subarray(0, offset).equals(bytes.subarray(0, offset)), 'MPQ prefix changed');
+        assert.equal(other.sectorSize, size, 'MPQ sector size was not applied');
+        assert(other.hashTable.equals(hashTable), 'MPQ hash/locale slots changed');
+        assert.equal(other.blockCount, blockCount, 'MPQ block indices changed');
+        for (let index = 0; index < blockCount; index++) {
+            const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
+            if (!(flags & 0x80000000)) {
+                assert(other.blockTable.subarray(p, p + 16).equals(blockTable.subarray(p, p + 16)), 'Inactive MPQ block changed');
+                continue;
+            }
+            assert.equal(other.blockTable.readUInt32LE(p + 8), blockTable.readUInt32LE(p + 8), 'MPQ block size changed');
+            assert.equal((other.blockTable.readUInt32LE(p + 12) | 0x200) >>> 0, (flags | 0x200) >>> 0, 'MPQ block flags changed');
+        }
+        for (const entry of entries) assert(other.readBlock(entry.index, entry.name).equals(entry.contents), 'MPQ sector rebuild readback mismatch: ' + (entry.name ?? '#' + entry.index));
+        return result;
     }
     function verifyPreserved(candidate, { changedNames = [], removedNames = [] } = {}) {
         validateArchive();
@@ -556,16 +691,18 @@ export function openMap(input) {
         }
         return true;
     }
-    const api = { read, replace, compact, has, listNames, inspect, remove, optimize, verifyPreserved };
-    mapStates.set(api, { bytes, offset, sectorSize, hashCount, blockCount, hashTable, blockTable, validateArchive });
+    const api = { read, replace, compact, has, listNames, inspect, remove, optimize, resector, verifyPreserved,
+        validate: () => { validateArchive(); return true; } };
+    mapStates.set(api, { bytes, offset, sectorSize, hashCount, blockCount, hashTable, blockTable, validateArchive, readBlock });
     return api;
 }
 
 export function runMpqTests() {
     const exists = 0x80000000, fixedEncrypted = 0x80030200;
-    const prefix = Buffer.from('HM3W: preserve the editor map prefix\0');
+    const prefix = Buffer.alloc(512);
+    prefix.write('HM3W: preserve the editor map prefix\0');
     function tables(bytes) {
-        const offset = bytes.indexOf(Buffer.from([77, 80, 81, 26]));
+        const offset = findArchiveOffset(bytes);
         const header = bytes.subarray(offset, offset + 32);
         const hashStart = offset + header.readUInt32LE(16), blockStart = offset + header.readUInt32LE(20);
         return { offset, header,

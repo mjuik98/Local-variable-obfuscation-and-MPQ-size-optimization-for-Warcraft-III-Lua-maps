@@ -65,7 +65,10 @@ export function createTestMap(entries, options = {}) {
         records.push({ name: '(listfile)', data: Buffer.from([...new Set(known)].join('\r\n') + '\r\n') });
     }
     if (options.attributes) records.push({ name: '(attributes)', data: Buffer.alloc(0) });
-    const count = records.length, prefix = options.prefix ?? Buffer.from('HM3W-memory-test\0');
+    // Storm reads archives only at 512-byte aligned offsets, like editor maps.
+    const suppliedPrefix = options.prefix ?? Buffer.from('HM3W-memory-test\0');
+    const prefix = Buffer.concat([suppliedPrefix, Buffer.alloc((512 - suppliedPrefix.length % 512) % 512)]);
+    const count = records.length;
     const hashCount = options.hashCount ?? 64, sectorShift = options.sectorShift ?? 0, sectorSize = 512 * 2 ** sectorShift;
     const hashes = Buffer.alloc(hashCount * 16, 0xff), blocks = Buffer.alloc(count * 16);
     if (options.attributes) {

@@ -7,23 +7,76 @@ test('configuration defaults preserve files and are independent between runs', (
     assert.equal(first.cleanup.editor, false);
     assert.equal(first.cleanup.development, false);
     assert.equal(first.lua.renameLocals, true);
+    assert.equal(first.strings.enabled, false);
+    assert.equal(first.lua.nameMode, 'compact');
+    assert.equal(first.lua.seed, 'warcraft-lua-protector');
+    assert.equal(first.strings.mode, 'escape');
+    first.lua.vmFunctions.push('Reviewed');
+    assert.deepEqual(second.lua.vmFunctions, []);
     first.lua.keepLocals.push('privateName');
     first.compression.levels.push(1);
+    first.compression.strategies.push('rle');
     assert.deepEqual(second.lua.keepLocals, []);
     assert.deepEqual(DEFAULT_CONFIG.compression.levels, [6, 9]);
+    assert.deepEqual(second.compression.strategies, ['default']);
+    assert.deepEqual(DEFAULT_CONFIG.compression.strategies, ['default']);
+    first.strings.keep.push('keep message');
+    assert.deepEqual(second.strings.keep, []);
+});
+
+test('strengthening modes and explicit VM names are strict and keep the supplied seed intact', () => {
+    const seed = '  재현 seed 😀  ', vmFunctions = ['Reviewed', 'Second', 'Reviewed'];
+    const config = resolveConfig({ lua: { nameMode: 'seeded', seed, vmFunctions }, strings: { mode: 'runtime' } });
+    assert.equal(config.lua.nameMode, 'seeded');
+    assert.equal(config.lua.seed, seed);
+    assert.equal(config.strings.mode, 'runtime');
+    assert.equal(config.strings.enabled, false, 'Choosing a mode alone must not enable string rewriting');
+    assert.deepEqual(config.lua.vmFunctions, ['Reviewed', 'Second']);
+    assert.deepEqual(vmFunctions, ['Reviewed', 'Second', 'Reviewed']);
+    assert.equal(resolveConfig({ lua: { seed: 'x'.repeat(128) } }).lua.seed.length, 128);
+    for (const lua of [{ nameMode: null }, { nameMode: 'random' }, { vmFunctions: null }, { vmFunctions: ['bad-name'] }, { vmFunctions: [''] }, { vmFunctions: new Array(1) }]) assert.throws(() => resolveConfig({ lua }));
+    for (const seed of ['', null, 1, 'x'.repeat(129), '\ud800', '\udc00', 'a\0b', 'a\nb', 'a\u0085b', 'a\u2028b', 'a\u2029b']) assert.throws(() => resolveConfig({ lua: { seed } }), /lua\.seed/);
+    for (const mode of [null, '', 'Runtime', true]) assert.throws(() => resolveConfig({ strings: { mode } }), /strings\.mode/);
 });
 
 test('configuration normalizes compression and repeatable names deterministically', () => {
-    const resolved = resolveConfig({ lua: { keepLocals: ['MyLocal', 'MyLocal'] }, compression: { levels: [9, 0, 6, 9], excludeFiles: ['Textures/test.blp'] } });
+    const strategies = ['fixed', 'rle', 'default', 'fixed', 'huffman-only', 'filtered'];
+    const resolved = resolveConfig({ lua: { keepLocals: ['MyLocal', 'MyLocal'] }, compression: { levels: [9, 0, 6, 9], strategies, excludeFiles: ['Textures/test.blp'] } });
     assert.deepEqual(resolved.lua.keepLocals, ['MyLocal']);
     assert.deepEqual(resolved.compression.levels, [0, 6, 9]);
+    assert.deepEqual(resolved.compression.strategies, ['default', 'filtered', 'huffman-only', 'rle', 'fixed']);
+    assert.deepEqual(strategies, ['fixed', 'rle', 'default', 'fixed', 'huffman-only', 'filtered']);
     assert.equal(canonicalPath(resolved.compression.excludeFiles[0]), 'TEXTURES\\TEST.BLP');
 });
 
 test('invalid configuration fails explicitly instead of silently falling back', () => {
     for (const input of [null, [], { unexpected: {} }, { lua: null }, { lua: { rename: true } }, { lua: { minify: 1 } },
         { lua: { keepLocals: ['bad-name'] } }, { cleanup: { keepFiles: ['bad\nname'] } }, { compression: { levels: [] } },
-        { compression: { levels: [10] } }, { compression: { levels: [1.5] } }, { compression: { excludeFiles: ['한글.blp'] } }]) {
+        { compression: { levels: [10] } }, { compression: { levels: [1.5] } }, { compression: { excludeFiles: ['한글.blp'] } },
+        { strings: { enabled: 1 } }, { strings: { keep: [null] } }, { strings: { keep: ['\ud800'] } }]) {
         assert.throws(() => resolveConfig(input));
+    }
+});
+
+test('compression strategies reject malformed and unsupported values even when compression is disabled', () => {
+    for (const strategies of [undefined, null, [], 'default', [0], ['DEFAULT'], ['unknown'], ['default', null], new Array(1)]) {
+        assert.throws(() => resolveConfig({ compression: { enabled: false, strategies } }), /compression\.strategies/);
+    }
+});
+
+test('experimental global, field, native and sector options are strict and default off', () => {
+    const defaults = resolveConfig();
+    assert.equal(defaults.lua.renameGlobals, false);
+    assert.equal(defaults.lua.renameFields, false);
+    assert.equal(defaults.lua.hideNatives, false);
+    assert.deepEqual(defaults.lua.keepGlobals, []);
+    assert.equal(defaults.compression.sectorSizeShift, null);
+    const custom = resolveConfig({ lua: { renameGlobals: true, renameFields: true, hideNatives: true, keepGlobals: ['Kept', 'Kept'] }, compression: { sectorSizeShift: 7 } });
+    assert.deepEqual(custom.lua.keepGlobals, ['Kept']);
+    assert.equal(custom.compression.sectorSizeShift, 7);
+    for (const invalid of [{ lua: { renameGlobals: 1 } }, { lua: { hideNatives: 'yes' } }, { lua: { keepGlobals: ['not a name'] } },
+        { compression: { sectorSizeShift: 2 } }, { compression: { sectorSizeShift: 9 } }, { compression: { sectorSizeShift: '7' } },
+        { compression: { sectorSizeShift: 7, enabled: false } }, { compression: { sectorSizeShift: 7, excludeFiles: ['war3map.lua'] } }]) {
+        assert.throws(() => resolveConfig(invalid), JSON.stringify(invalid));
     }
 });
