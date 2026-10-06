@@ -38,7 +38,9 @@ export function compressionThreads() {
 function workers() {
     if (pool) return pool;
     pool = Array.from({ length: compressionThreads() }, () => {
-        const worker = new Worker(new URL('./compress-worker.mjs', import.meta.url));
+        // Parent flags such as --input-type stop a worker from loading its module,
+        // and the waiting caller could not observe that failure; workers need none.
+        const worker = new Worker(new URL('./compress-worker.mjs', import.meta.url), { execArgv: [] });
         const { port1, port2 } = new MessageChannel();
         worker.postMessage({ port: port2 }, [port2]);
         // Idle workers must not keep the process alive.

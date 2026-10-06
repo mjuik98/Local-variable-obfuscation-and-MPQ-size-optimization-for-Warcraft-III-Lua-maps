@@ -13,8 +13,12 @@ parentPort.on('message', message => {
         try {
             const raw = Buffer.from(data.buffer, offsets[index], offsets[index + 1] - offsets[index]);
             // Copy out of shared memory so zlib reads a stable private buffer.
-            const bytes = compressSector(Buffer.from(raw), message.options);
-            port.postMessage({ id: message.id, index, bytes });
+            const result = compressSector(Buffer.from(raw), message.options);
+            // A small Buffer is a view into a shared 8 KB pool, and cloning a view
+            // copies its whole backing store. Transfer an exact-size copy instead.
+            const bytes = new Uint8Array(result.length);
+            bytes.set(result);
+            port.postMessage({ id: message.id, index, bytes }, [bytes.buffer]);
         } catch (error) {
             port.postMessage({ id: message.id, index, error: error?.message ?? String(error) });
             Atomics.store(control, 2, 1);
