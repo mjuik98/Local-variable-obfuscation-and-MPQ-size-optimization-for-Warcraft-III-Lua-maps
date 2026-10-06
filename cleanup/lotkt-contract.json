@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "inputMapSha256": "74c828e3863fa451f3d3ab35acd5100c8e4102c3f62f13c65f732e58ac4d2584",
+  "scriptSha256": "ad84e2db8f1be97dce6910e25190a6e41605edba48e4f37131a53260dc93ba95",
+  "review": {
+    "dynamicFileAccess": "Reviewed the existing LoTKT/dist/LoTKT_Lua-built.w3x input on 2026-10-03: 60,727,110 map bytes and 8,142,502 Lua bytes. Its single Preloader reference is File.readPreload(self.filename). The two FileIO_Read callers supply the local constant 클랜지키기.txt; the save writer supplies the same filename; FileIO.Init supplies FileTester.pld. No other File.open callers select a filename. The two dynamic _G indexes belong to InventoryNativeCompat.Resolve, whose callers supply seven explicit inventory native names. The compiled MapInitializer registers 31 literal model paths for PreloadConfiguredFiles. None of these reviewed paths select a cleanup candidate.",
+    "objectAndImportReferences": "Read all 909 named entries in this exact input. Outside the four deletion candidates, the only candidate filename reference was the custom-path lotkt-object-history.json record in war3map.imp; cleanup removes this inventory record. Parsed the ten unit, ability, item, buff and upgrade base/skin object payloads: 8,100 records and 100,767 string fields contained no candidate filename references. The history hash and all twelve payload hashes in lotkt-object-receipt.json matched the corresponding input bytes. Build source inspection confirms that history and receipt are consumed by object reconciliation/adoption tools and are not loaded by the map Lua.",
+    "limitations": "This is an explicit dependency review for one exact input, not a static proof or Warcraft III game validation. The four FileIO/save/native-compat modules were compared with their embedded compiled source; this does not claim that the entire map reflects the latest LoTKT checkout. External save payloads are assumed to follow the existing FileIO tooltip-data format; modified external scripts, injected runtime code and add-ons are outside this review. Unnamed files are preserved. Any change to the input map or Lua invalidates this contract and requires a fresh dependency review. Keep the editable original for World Editor, rebuilding and object adoption; use cleanup only on a separate distribution copy. Gameplay, saves and multiplayer still need game testing."
+  },
+  "files": [
+    {
+      "path": "war3map.wtg",
+      "reason": "Editor trigger definitions are retained in the editable original. This reviewed Lua map executes the already assembled root war3map.lua, and its reviewed file/resource access paths do not read the trigger definition file.",
+      "evidence": [
+        "LoTKT/build/build-lua.mjs:192-235 preserves editor main/config, appends LoTKTLua.Start and the source bundle, and replaces root war3map.lua.",
+        "Reviewed compiled war3map.lua:218901 File.readPreload; 217833 and 217864 save reads; 218991 FileTester.pld initialization.",
+        "All ten base/skin object payloads and the other decoded named input entries contain no war3map.wtg filename reference."
+      ]
+    },
+    {
+      "path": "war3map.wct",
+      "reason": "Custom editor trigger data is retained in the editable original. This exact input contains a 14-byte war3map.wct and the complete runtime script in root war3map.lua; reviewed runtime file/resource access does not read war3map.wct.",
+      "evidence": [
+        "LoTKT/build/build-lua.mjs:192-235 emits the complete executable code into war3map.lua rather than reading wct at game runtime.",
+        "Reviewed compiled war3map.lua FileIO and model preloading call paths select save files and model paths, never war3map.wct.",
+        "All ten base/skin object payloads and the other decoded named input entries contain no war3map.wct filename reference."
+      ]
+    },
+    {
+      "path": "lotkt-object-history.json",
+      "reason": "Build-only object reconciliation/adoption history; removing it from this distribution copy does not remove the actual object payloads. It remains in the editable/build input, and is not needed by the reviewed game Lua.",
+      "evidence": [
+        "LoTKT/build/object-history.mjs:5,14-35,76-151 generates the metadata, registers its custom import path for editor retention, and uses it to reconcile object fields during builds.",
+        "LoTKT/build/object-history.mjs:155-176 consumes the history during object adoption; LoTKT/build/build-lua.mjs:235 inserts it as a separate map entry.",
+        "The 24,957,893-byte input history matches receipt.historyHash. No compiled Lua or object/skin string field references its filename; the sole external named-entry reference is its removable war3map.imp row."
+      ]
+    },
+    {
+      "path": "lotkt-object-receipt.json",
+      "reason": "Build-only provenance and payload checksums for object adoption. The game consumes the actual Lua/object/resource payloads, which cleanup preserves, and the reviewed game Lua does not load this receipt.",
+      "evidence": [
+        "LoTKT/build/object-history.mjs:155-179 reads the receipt in adoptionEntries and generates source/history/payload hashes in objectReceipt.",
+        "LoTKT/build/build-lua.mjs:235 adds the receipt as a separate build result entry.",
+        "The input receipt matches the history and all twelve recorded payload hashes. No compiled Lua, object/skin string field or other decoded named input entry references lotkt-object-receipt.json."
+      ]
+    }
+  ]
+}

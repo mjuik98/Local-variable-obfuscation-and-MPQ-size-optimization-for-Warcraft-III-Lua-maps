@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fengari from 'fengari';
 import { protectMap } from '../src/protect.mjs';
 import { openMap } from '../src/mpq.mjs';
-import { parseLua } from '../src/lua.mjs';
+import { parseLua, transformLua } from '../src/lua.mjs';
 import { resolveConfig } from '../src/config.mjs';
 import { readScriptLanguage } from '../src/map-info.mjs';
 import { createLuaMap, createMapInfo, createImports } from './map-fixture.mjs';
@@ -50,6 +50,81 @@ test('default protection is deterministic and preserves editor and development f
     for (const name of ['war3map.wtg', 'war3map.wct', 'lotkt-object-history.json', 'lotkt-object-receipt.json', 'model.mdx']) {
         assert.deepEqual(output.read(name), openMap(source).read(name));
     }
+});
+
+test('recompression still optimizes an unchanged script and changed payloads already use all candidates', () => {
+    const script = '-- keep this source unchanged\n' + 'local meaningfulName=42\n'.repeat(120) +
+        'function config() end\nfunction main() return meaningfulName end';
+    const source = createLuaMap({ script, extraEntries: [['model.mdx', Buffer.from('preserve model '.repeat(1000))]] });
+    const original = openMap(source), plain = protectMap(source, { lua: { renameLocals: false, minify: false } });
+    const plainMap = openMap(plain.bytes);
+    assert.deepEqual(plainMap.read('war3map.lua'), original.read('war3map.lua'));
+    const scriptSize = map => map.inspect().blocks[0].packedSize;
+    assert(scriptSize(plainMap) < scriptSize(original), 'An identical replacement must still receive compression');
+    for (const strategies of [['default'], ['default', 'filtered', 'huffman-only', 'rle', 'fixed']]) {
+        const config = { compression: { strategies } }, result = protectMap(source, config), map = openMap(result.bytes);
+        assert(!map.read('war3map.lua').equals(original.read('war3map.lua')));
+        assert.deepEqual(map.optimize({ levels: [6, 9], strategies }), result.bytes,
+            'Recompressing the changed script again must find no better candidate');
+        for (const name of original.listNames().filter(name => name !== 'war3map.lua')) {
+            assert.deepEqual(map.read(name), original.read(name), 'Recompression must preserve logical file bytes: ' + name);
+        }
+        assert(original.verifyPreserved(result.bytes, { changedNames: original.listNames() }));
+    }
+});
+
+test('hardened transforms compose with VM and preserve non-script MPQ contracts', () => {
+    const script = `do
+    local function ReviewedCalculation(value, scale)
+        local result=value*scale
+        if result<0 then return -result,nil else return result+4,false end
+    end
+    local function Run()
+        local result,flag=ReviewedCalculation(3,2)
+        local message='보호된 테스트 메시지'
+        return tostring(result),tostring(flag),message
+    end
+    PublicRun=Run
+    end
+    function config() end
+    function main() return PublicRun() end`;
+    const source=createLuaMap({script, extraEntries:[
+        ['war3map.wtg',Buffer.from('editor must stay')],
+        ['encrypted.bin',{data:Buffer.from('encrypted resource'),flags:0x80030200}],
+        ['opaque.bin',{data:Buffer.from([0x10,1,2,3,4]),decoded:Buffer.from('opaque'),flags:0x81000200}],
+    ],mpq:{attributes:true,records:[{data:Buffer.from('unlisted live block')},{name:'localized.bin',locale:0x412,data:Buffer.from('localized resource')}]}});
+    const before=Buffer.from(source), options={lua:{nameMode:'seeded',seed:'composed',vmFunctions:['ReviewedCalculation']},strings:{enabled:true,mode:'runtime'}};
+    const result=protectMap(source,options), reread=openMap(result.bytes), code=reread.read('war3map.lua').toString('utf8');
+    assert.deepEqual(source,before);
+    assert.deepEqual(result.bytes,protectMap(source,options).bytes);
+    assert.equal(result.summary.vm.virtualizedFunctions,1);
+    assert.equal(result.summary.strings.mode,'runtime');
+    assert(result.summary.strings.encodedLiterals>0);
+    assert.deepEqual(luaResultBytes(code),luaResultBytes(script));
+    assert(openMap(source).verifyPreserved(result.bytes,{changedNames:['war3map.lua']}));
+    assert.deepEqual(reread.read('war3map.wtg'),Buffer.from('editor must stay'));
+    assert.deepEqual(reread.read('encrypted.bin'),Buffer.from('encrypted resource'));
+});
+
+test('VM and runtime hiding stay explicit and unsupported map functions fail before output', () => {
+    const source=createLuaMap({script:'local function Unsafe(a) return Native(a) end\nfunction config() end\nfunction main() return Unsafe(7) end'});
+    assert.equal(protectMap(source).summary.vm.virtualizedFunctions,0);
+    assert.throws(()=>protectMap(source,{lua:{vmFunctions:['Unsafe']}}),/CallExpression/);
+    assert.throws(()=>protectMap(source,{lua:{vmFunctions:['Missing']}}),/exactly one/);
+});
+
+test('strengthened compile-only validation catches temporary register overflow without executing the map', () => {
+    const locals=Array.from({length:197},(_,index)=>'v'+index).join(','), values=Array.from({length:49},()=>1).join(',');
+    const script='local '+locals+';local function Target(a) return a+1 end;function config() end;function main() end;return {'+values+',{1,2,3,4,5}}';
+    const state=fengari.lauxlib.luaL_newstate();
+    try { assert.equal(fengari.lauxlib.luaL_loadstring(state,fengari.to_luastring(script)),fengari.lua.LUA_OK); }
+    finally { fengari.lua.lua_close(state); }
+    const source=createLuaMap({script});
+    assert.throws(()=>protectMap(source,{lua:{vmFunctions:['Target']}}),/compilation failed.*too many registers/);
+    const runtimeSource=createLuaMap({script:script.replace('return {','local message="readable message";return {')});
+    assert.throws(()=>protectMap(runtimeSource,{strings:{enabled:true,mode:'runtime'}}),/too many registers|resource limits/);
+    const neverExecute=createLuaMap({script:'error("must never execute")\nfunction config() end\nfunction main() return "hidden message" end'});
+    assert.equal(protectMap(neverExecute,{strings:{enabled:true,mode:'runtime'}}).summary.strings.mode,'runtime');
 });
 
 test('explicit cleanup removes only selected files and preserves locale, orphan and attribute block indices', () => {
@@ -139,7 +214,7 @@ test('configuration is validated and fresh defaults remain unchanged after calle
     const resolved = resolveConfig({ compression: { levels: [9, 6, 9] }, cleanup: { keepFiles: ['war3map.wtg'] } });
     assert.deepEqual(resolved.compression.levels, [6, 9]);
     resolved.cleanup.keepFiles.push('other.bin'); resolved.lua.keepLocals.push('counter');
-    assert.deepEqual(resolveConfig().cleanup, { editor: false, development: false, keepFiles: [] });
+    assert.deepEqual(resolveConfig().cleanup, { editor: false, development: false, editorData: false, listfile: false, keepFiles: [] });
     assert.deepEqual(resolveConfig().lua.keepLocals, []);
     for (const value of [null, [], { unknown: true }, { lua: { typo: true } }, { cleanup: { editor: 1 } }, { compression: { levels: [] } }, { compression: { levels: [10] } }, { cleanup: { keepFiles: ['bad\0path'] } }]) {
         assert.throws(() => resolveConfig(value));
@@ -198,4 +273,116 @@ test('cleanup rejects malformed import manifests without modifying the input', (
         assert.throws(() => protectMap(source, { cleanup: { editor: true } }), /import/i);
         assert.deepEqual(source, before);
     }
+});
+
+test('optional string encoding composes with local renaming and MPQ preservation', () => {
+    const script = 'function config() end\nfunction main() local message="secret message 한글"; return message, "A0EG", "|cffff0000level %d|r" end';
+    const source = createLuaMap({ script, extraEntries: [['resource.bin', Buffer.from('preserved bytes')]], mpq: { attributes: true } }), before = Buffer.from(source);
+    const result = protectMap(source, { strings: { enabled: true }, compression: { enabled: false } }), protectedCode = openMap(result.bytes).read('war3map.lua').toString();
+    assert.equal(result.summary.strings.encodedLiterals, 1);
+    assert(!protectedCode.includes('secret message'));
+    assert.deepEqual(luaResultBytes(protectedCode), luaResultBytes(script));
+    assert.equal(result.summary.lua.outputBytes, Buffer.byteLength(protectedCode));
+    assert(openMap(source).verifyPreserved(result.bytes, { changedNames: ['war3map.lua'] }));
+    assert.deepEqual(source, before);
+});
+
+test('string encoding cannot bypass source observation when naming and minification are disabled', () => {
+    const script = 'function config() end\nfunction main() local message="hidden text"; return message, debug.getinfo(1, "S").source end';
+    const source = createLuaMap({ script }), before = Buffer.from(source);
+    assert.throws(() => protectMap(source, { lua: { renameLocals: false, minify: false }, strings: { enabled: true } }), /source-location/);
+    const identity = protectMap(source, { lua: { renameLocals: false, minify: false }, strings: { enabled: true, keep: ['hidden text'] } });
+    assert.deepEqual(openMap(identity.bytes).read('war3map.lua'), Buffer.from(script));
+    assert.deepEqual(source, before);
+});
+
+test('map savings reconcile packed blocks and chained archive stages without changing preservation', () => {
+    const source = createLuaMap({ extraEntries: [
+        ['war3map.wtg', Buffer.from('editor payload to remove')],
+        ['war3map.imp', createImports([{ path: 'war3map.wtg' }, { path: 'resource.bin' }])],
+        ['resource.bin', { data: Buffer.alloc(9000, 65), flags: 0x80000200 }],
+        ['opaque.bin', { data: Buffer.from('opaque compressed payload'), flags: 0x80000100 }],
+    ], mpq: { attributes: true, gap: 17, records: [{ data: Buffer.from('orphan payload') }] } });
+    const snapshot = Buffer.from(source);
+    const result = protectMap(source, { cleanup: { editor: true } });
+    const { savings } = result.summary;
+    assert.equal(savings.savedBytes, source.length - result.bytes.length);
+    assert.equal(savings.files.reduce((sum, file) => sum + file.savedBytes, 0) + savings.storage.savedOtherBytes, savings.savedBytes);
+    assert.equal(savings.storage.beforePayloadBytes + savings.storage.beforeOtherBytes, source.length);
+    assert.equal(savings.storage.afterPayloadBytes + savings.storage.afterOtherBytes, result.bytes.length);
+    assert.deepEqual(savings.stages.map(stage => stage.id), ['lua', 'cleanup', 'recompression']);
+    assert.match(savings.stages[0].label, /Lua.*import.*공간 회수/);
+    let previous = source.length;
+    for (const stage of savings.stages) { assert.equal(stage.beforeBytes, previous); previous = stage.afterBytes; }
+    assert.equal(previous, result.bytes.length);
+    assert.equal(savings.stages.reduce((sum, stage) => sum + stage.savedBytes, 0), savings.savedBytes);
+    const resource = savings.files.find(file => file.names.includes('resource.bin'));
+    assert.equal(resource.beforeBytes, openMap(source).inspect().blocks[resource.blockIndex].packedSize);
+    assert(resource.beforeBytes < 9000, 'Savings must report packed size, not decoded size');
+    assert.equal(savings.files.find(file => file.names.includes('war3map.wtg')).kind, 'removed');
+    assert.equal(savings.files.find(file => file.names.includes('war3map.imp')).kind, 'rewrite');
+    assert.equal(savings.files.find(file => file.names.includes('opaque.bin')).kind, 'unchanged');
+    assert.deepEqual(source, snapshot);
+    assert(openMap(source).verifyPreserved(result.bytes, {
+        changedNames: ['war3map.lua', 'war3map.imp', '(listfile)', 'resource.bin', 'war3map.w3i', 'war3map.w3e'],
+        removedNames: ['war3map.wtg'],
+    }));
+});
+
+test('compression strategies reach script replacement and subsequent file optimization', () => {
+    const source = createLuaMap({ script: '-- comments '.repeat(100) + '\nfunction config() end\nfunction main() local longName=12; return longName end',
+        extraEntries: [['resource.bin', Buffer.alloc(20000, 65)]] });
+    const configuration = { compression: { levels: [6], strategies: ['rle'] } };
+    const result = protectMap(source, configuration);
+    const script = Buffer.from(transformLua(openMap(source).read('war3map.lua').toString()).code);
+    const replaced = openMap(source).replace([['war3map.lua', script]], { levels: [6], strategies: ['rle'] });
+    const current = openMap(replaced);
+    const expected = current.optimize({ names: current.listNames(), levels: [6], strategies: ['rle'] });
+    assert.deepEqual(result.bytes, expected);
+    assert.notDeepEqual(result.bytes, protectMap(source, { compression: { levels: [6], strategies: ['default'] } }).bytes);
+});
+
+test('savings preserves unreadable listfiles when compression and cleanup are disabled', () => {
+    const source = createLuaMap({ extraEntries: [['(listfile)', { data: Buffer.from('opaque listfile'), flags: 0x80000100 }]] });
+    const result = protectMap(source, { compression: { enabled: false } });
+    const list = result.summary.savings.files.find(file => file.names.includes('(listfile)'));
+    assert.equal(list.kind, 'unchanged');
+    assert.match(list.label, /읽기 미지원.*보존/);
+    assert.deepEqual(openMap(source).read('war3map.w3e'), openMap(result.bytes).read('war3map.w3e'));
+});
+
+test('maximum protection with a sector size change keeps results, metadata and the required entries', async () => {
+    const { resolveSettings } = await import('../src/presets.mjs');
+    const script = 'QuestState = { count = 0 }\nfunction QuestState.add(step) QuestState.count = QuestState.count + step; return QuestState.count end\n' +
+        'function config() end\nfunction main() local total = QuestState.add(2) + QuestState.add(3); return I2S(total) .. " units", "hidden message text" end\n';
+    const source = createLuaMap({ script, extraEntries: [['war3map.wts', Buffer.from('STRING 1\r\n{\r\nTooltip text\r\n}\r\n'.repeat(80))]], mpq: { attributes: true } });
+    const { config } = resolveSettings({ preset: 'maximum', overrides: { compression: { sectorSizeShift: 3 } } });
+    const result = protectMap(source, config), output = openMap(result.bytes), before = openMap(source);
+    assert.equal(output.inspect().sectorSize, 4096);
+    assert.equal(result.summary.sectorSize, 4096);
+    assert(result.summary.savings.stages.some(stage => stage.id === 'sectors'));
+    for (const name of ['war3map.w3i', 'war3map.w3e', 'war3map.wts']) assert.deepEqual(output.read(name), before.read(name));
+    const finalScript = output.read('war3map.lua').toString();
+    assert(!/QuestState|hidden message|I2S\(/.test(finalScript));
+    assert.equal(result.summary.natives.hiddenNatives, 1);
+    assert.equal(result.summary.lua.renamedGlobals, 1);
+    const { lua, lauxlib, lualib, to_luastring } = fengari, state = lauxlib.luaL_newstate();
+    try {
+        lualib.luaL_openlibs(state);
+        assert.equal(lauxlib.luaL_dostring(state, to_luastring(finalScript + '\nfunction I2S(value) return tostring(value) end\nreturn main()')), lua.LUA_OK);
+        assert.deepEqual([1, 2].map(index => Buffer.from(lua.lua_tolstring(state, index)).toString()), ['7 units', 'hidden message text']);
+    } finally { lua.lua_close(state); }
+    assert.deepEqual(protectMap(source, config).bytes, result.bytes, 'Maximum protection is reproducible');
+});
+
+test('UTF-8 import paths are recompressed and can be excluded by name', () => {
+    const korean = 'war3mapImported\\텍스처\\한글.blp', compressible = Buffer.alloc(8192, 67);
+    const source = createLuaMap({ extraEntries: [[korean, compressible]], mpq: { attributes: true } });
+    const index = openMap(source).inspect().blocks.findIndex(block => block.size === compressible.length);
+    const optimized = openMap(protectMap(source).bytes);
+    assert(optimized.inspect().blocks[index].packedSize < compressible.length);
+    assert.deepEqual(optimized.read(korean), compressible);
+    const excluded = openMap(protectMap(source, { compression: { excludeFiles: ['WAR3MAPIMPORTED/텍스처/한글.BLP'] } }).bytes);
+    assert.equal(excluded.inspect().blocks[index].packedSize, compressible.length);
+    assert.deepEqual(excluded.read(korean), compressible);
 });

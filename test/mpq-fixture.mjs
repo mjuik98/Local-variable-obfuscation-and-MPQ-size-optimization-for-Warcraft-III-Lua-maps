@@ -15,13 +15,14 @@ for (let low = 0; low < 256; low++) {
 }
 export function fixtureHash(name, type) {
     let a = 0x7fed7fed, b = 0xeeeeeeee;
-    for (const c of Buffer.from(name.replaceAll('/', '\\').toUpperCase(), 'ascii')) {
+    // Warcraft III hashes UTF-8 bytes and folds only ASCII letters and slashes.
+    for (const c of Buffer.from(name, 'utf8').map(byte => byte === 47 ? 92 : byte >= 97 && byte <= 122 ? byte - 32 : byte)) {
         a = (crypt[type * 256 + c] ^ (a + b)) >>> 0;
         b = (c + a + b + (b << 5) + 3) >>> 0;
     }
     return a;
 }
-function transform(input, key, encrypt = false) {
+export function fixtureTransform(input, key, encrypt = false) {
     const bytes = Buffer.from(input);
     let state = 0xeeeeeeee;
     for (let i = 0; i + 4 <= bytes.length; i += 4) {
@@ -43,12 +44,12 @@ function encode(raw, name, start, flags, level, sectorSize) {
         const part = raw.subarray(i * sectorSize, (i + 1) * sectorSize);
         const compressed = Buffer.concat([Buffer.from([2]), zlib.deflateSync(part, { level })]);
         let packed = compressed.length < part.length ? compressed : part;
-        if (flags & 0x10000) packed = transform(packed, (key + i) >>> 0, true);
+        if (flags & 0x10000) packed = fixtureTransform(packed, (key + i) >>> 0, true);
         chunks.push(packed);
         cursor += packed.length;
     }
     offsets.writeUInt32LE(cursor, count * 4);
-    return Buffer.concat([flags & 0x10000 ? transform(offsets, (key - 1) >>> 0, true) : offsets, ...chunks]);
+    return Buffer.concat([flags & 0x10000 ? fixtureTransform(offsets, (key - 1) >>> 0, true) : offsets, ...chunks]);
 }
 
 // Basic callers supply Map<string, Buffer> or [name, Buffer][]. Rich record values
@@ -65,7 +66,10 @@ export function createTestMap(entries, options = {}) {
         records.push({ name: '(listfile)', data: Buffer.from([...new Set(known)].join('\r\n') + '\r\n') });
     }
     if (options.attributes) records.push({ name: '(attributes)', data: Buffer.alloc(0) });
-    const count = records.length, prefix = options.prefix ?? Buffer.from('HM3W-memory-test\0');
+    // Storm reads archives only at 512-byte aligned offsets, like editor maps.
+    const suppliedPrefix = options.prefix ?? Buffer.from('HM3W-memory-test\0');
+    const prefix = Buffer.concat([suppliedPrefix, Buffer.alloc((512 - suppliedPrefix.length % 512) % 512)]);
+    const count = records.length;
     const hashCount = options.hashCount ?? 64, sectorShift = options.sectorShift ?? 0, sectorSize = 512 * 2 ** sectorShift;
     const hashes = Buffer.alloc(hashCount * 16, 0xff), blocks = Buffer.alloc(count * 16);
     if (options.attributes) {
@@ -120,21 +124,21 @@ export function createTestMap(entries, options = {}) {
     header.writeUInt32LE(hashOffset, 16); header.writeUInt32LE(blockOffset, 20);
     header.writeUInt32LE(hashCount, 24); header.writeUInt32LE(count, 28);
     records.forEach((record, index) => record.packed.copy(output, prefix.length + blocks.readUInt32LE(index * 16)));
-    transform(hashes, fixtureHash('(hash table)', 3), true).copy(output, prefix.length + hashOffset);
-    transform(blocks, fixtureHash('(block table)', 3), true).copy(output, prefix.length + blockOffset);
+    fixtureTransform(hashes, fixtureHash('(hash table)', 3), true).copy(output, prefix.length + hashOffset);
+    fixtureTransform(blocks, fixtureHash('(block table)', 3), true).copy(output, prefix.length + blockOffset);
     return output;
 }
 export function inspectTestTables(bytes) {
     const offset = bytes.indexOf(Buffer.from([77, 80, 81, 26])), header = bytes.subarray(offset, offset + 32);
     const hashOffset = header.readUInt32LE(16), blockOffset = header.readUInt32LE(20);
     return { offset, header,
-        hashes: transform(bytes.subarray(offset + hashOffset, offset + hashOffset + header.readUInt32LE(24) * 16), fixtureHash('(hash table)', 3)),
-        blocks: transform(bytes.subarray(offset + blockOffset, offset + blockOffset + header.readUInt32LE(28) * 16), fixtureHash('(block table)', 3)) };
+        hashes: fixtureTransform(bytes.subarray(offset + hashOffset, offset + hashOffset + header.readUInt32LE(24) * 16), fixtureHash('(hash table)', 3)),
+        blocks: fixtureTransform(bytes.subarray(offset + blockOffset, offset + blockOffset + header.readUInt32LE(28) * 16), fixtureHash('(block table)', 3)) };
 }
 export function mutateTestMap(bytes, change) {
     const output = Buffer.from(bytes), state = inspectTestTables(output);
     change(state, output);
-    transform(state.hashes, fixtureHash('(hash table)', 3), true).copy(output, state.offset + state.header.readUInt32LE(16));
-    transform(state.blocks, fixtureHash('(block table)', 3), true).copy(output, state.offset + state.header.readUInt32LE(20));
+    fixtureTransform(state.hashes, fixtureHash('(hash table)', 3), true).copy(output, state.offset + state.header.readUInt32LE(16));
+    fixtureTransform(state.blocks, fixtureHash('(block table)', 3), true).copy(output, state.offset + state.header.readUInt32LE(20));
     return output;
 }
