@@ -17,7 +17,8 @@
     "package:windows": "node scripts/package-windows.mjs"
   },
   "dependencies": {
-    "luaparse": "0.3.1",
-    "fengari": "0.1.5"
+    "@gfx/zopfli": "1.0.15",
+    "fengari": "0.1.5",
+    "luaparse": "0.3.1"
   }
 }

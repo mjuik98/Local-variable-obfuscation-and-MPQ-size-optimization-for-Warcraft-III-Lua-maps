@@ -88,3 +88,9 @@ test('FourCC folding, editor data cleanup and listfile removal are strict boolea
     assert.equal(defaults.cleanup.listfile, false);
     for (const invalid of [{ lua: { foldFourCC: 'yes' } }, { cleanup: { editorData: 1 } }, { cleanup: { listfile: null } }]) assert.throws(() => resolveConfig(invalid));
 });
+
+test('Zopfli compression is a strict boolean that defaults off', () => {
+    assert.equal(resolveConfig().compression.zopfli, false);
+    assert.equal(resolveConfig({ compression: { zopfli: true } }).compression.zopfli, true);
+    assert.throws(() => resolveConfig({ compression: { zopfli: 1 } }));
+});

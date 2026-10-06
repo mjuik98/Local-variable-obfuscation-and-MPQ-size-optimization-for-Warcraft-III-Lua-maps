@@ -59,7 +59,8 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     onProgress('archive');
     const replacements = [['war3map.lua', finalScript]];
     if (cleanup.imports) replacements.push(['war3map.imp', cleanup.imports]);
-    const rewriteOptions = { levels: config.compression.enabled ? config.compression.levels : [0], strategies: config.compression.strategies };
+    const rewriteOptions = { levels: config.compression.enabled ? config.compression.levels : [0], strategies: config.compression.strategies,
+        zopfli: config.compression.enabled && config.compression.zopfli };
     let result = original.replace(replacements, rewriteOptions);
     savings.record('lua', 'Lua·import 기록 및 MPQ 공간 회수', result, { rewrite: true });
     if (cleanup.names.length) result = openMap(result).remove(cleanup.names);
@@ -74,13 +75,13 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
             if (!previous?.equals(contents)) excluded.add(canonicalPath(name));
         }
         result = current.optimize({ names: current.listNames().filter(name => !excluded.has(canonicalPath(name))),
-            levels: config.compression.levels, strategies: config.compression.strategies });
+            levels: config.compression.levels, strategies: config.compression.strategies, zopfli: config.compression.zopfli });
     }
     savings.record('recompression', '재압축·MPQ 공간 회수', result);
     const sectorSizeShift = config.compression.sectorSizeShift;
     if (sectorSizeShift !== null && openMap(result).inspect().sectorSize !== 512 * 2 ** sectorSizeShift) {
         onProgress('sectors');
-        result = openMap(result).resector({ shift: sectorSizeShift, levels: config.compression.levels, strategies: config.compression.strategies });
+        result = openMap(result).resector({ shift: sectorSizeShift, levels: config.compression.levels, strategies: config.compression.strategies, zopfli: config.compression.zopfli });
         savings.record('sectors', '섹터 크기 변경·전체 재압축', result);
     }
     // The listfile names entries for every earlier stage, so it goes last.

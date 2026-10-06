@@ -18,7 +18,7 @@ export const DEFAULT_CONFIG = Object.freeze({
         renameGlobals: false, renameFields: false, keepGlobals: Object.freeze([]), hideNatives: false, foldFourCC: false }),
     strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape' }),
     cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, keepFiles: Object.freeze([]) }),
-    compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null }),
+    compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false }),
 });
 
 function record(value, label) {
@@ -44,7 +44,7 @@ export function resolveConfig(input = {}) {
         assert(Object.keys(supplied).every(key => Object.hasOwn(defaults, key)), 'Unknown ' + section + ' option');
         result[section] = { ...defaults, ...supplied };
     }
-    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled']], ['cleanup', ['editor', 'development', 'editorData', 'listfile']], ['compression', ['enabled']]]) {
+    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled']], ['cleanup', ['editor', 'development', 'editorData', 'listfile']], ['compression', ['enabled', 'zopfli']]]) {
         for (const key of keys) assert(typeof result[section][key] === 'boolean', section + '.' + key + ' must be boolean');
     }
     result.lua.keepLocals = names(result.lua.keepLocals, 'lua.keepLocals', true);

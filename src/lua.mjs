@@ -24,9 +24,11 @@ export function parseLua(code, label = 'Lua') {
 function eachNode(node, visit) {
     if (!node || typeof node !== 'object') return;
     if (typeof node.type === 'string') visit(node);
-    for (const [key, value] of Object.entries(node)) {
+    // for...in avoids allocating key/value arrays for every node of large scripts.
+    for (const key in node) {
         if (ignoredKeys.has(key)) continue;
-        if (Array.isArray(value)) value.forEach(child => eachNode(child, visit));
+        const value = node[key];
+        if (Array.isArray(value)) { for (const child of value) eachNode(child, visit); }
         else if (value && typeof value === 'object') eachNode(value, visit);
     }
 }
@@ -207,9 +209,10 @@ function resolveBindings(ast, {trackResources = false, resourcesOnly = false} = 
         }
         case 'LabelStatement': case 'GotoStatement': return;
         default:
-            for (const [key, value] of Object.entries(node)) {
+            for (const key in node) {
                 if (ignoredKeys.has(key)) continue;
-                if (Array.isArray(value)) value.forEach(child => { if (child?.type) visit(child, current); });
+                const value = node[key];
+                if (Array.isArray(value)) { for (const child of value) if (child?.type) visit(child, current); }
                 else if (value?.type) visit(value, current);
             }
         }
@@ -685,12 +688,15 @@ function transformPrepared(code, ast, originalBindings, {minify = true, renameLo
 
 function freezeAst(ast) {
     if (frozenTrees.has(ast)) return ast;
-    const pending = [ast], seen = new WeakSet();
+    // A frozen object was already visited, including nodes shared by globals.
+    const pending = [ast];
     while (pending.length) {
         const current = pending.pop();
-        if (!current || typeof current !== 'object' || seen.has(current)) continue;
-        seen.add(current);
-        for (const value of Object.values(current)) if (value && typeof value === 'object') pending.push(value);
+        if (Object.isFrozen(current)) continue;
+        for (const key in current) {
+            const value = current[key];
+            if (value !== null && typeof value === 'object') pending.push(value);
+        }
         Object.freeze(current);
     }
     frozenTrees.add(ast);

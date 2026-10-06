@@ -20,7 +20,8 @@ try {
     fs.copyFileSync(process.execPath, path.join(stage, 'runtime', 'node.exe'));
     fs.cpSync(path.join(root, 'src'), path.join(stage, 'src'), { recursive: true });
     fs.mkdirSync(path.join(stage, 'node_modules'));
-    for (const name of ['luaparse', 'fengari', 'readline-sync', 'sprintf-js', 'tmp']) {
+    for (const name of ['luaparse', 'fengari', 'readline-sync', 'sprintf-js', 'tmp', '@gfx/zopfli', 'base64-js']) {
+        fs.mkdirSync(path.dirname(path.join(stage, 'node_modules', name)), { recursive: true });
         fs.cpSync(path.join(root, 'node_modules', name), path.join(stage, 'node_modules', name), { recursive: true });
     }
     fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ name: packageInfo.name, version: packageInfo.version, private: true, type: 'module' }, null, 2) + '\n');

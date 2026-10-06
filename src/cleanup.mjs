@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import luaparse from 'luaparse';
 import { canonicalPath } from './config.mjs';
+import { ignoredKeys } from './lua-syntax.mjs';
 
 const EDITOR_FILES = ['war3map.wtg', 'war3map.wct'];
 const DEVELOPMENT_FILES = ['lotkt-object-history.json', 'lotkt-object-receipt.json'];
@@ -77,9 +78,10 @@ function constantString(node) {
 function walk(node, visit, parent = null) {
     if (!node || typeof node !== 'object') return;
     if (node.type) visit(node, parent);
-    for (const [key, value] of Object.entries(node)) {
-        if (['comments', 'globals', 'loc', 'range'].includes(key)) continue;
-        if (Array.isArray(value)) value.forEach(child => walk(child, visit, node));
+    for (const key in node) {
+        if (ignoredKeys.has(key)) continue;
+        const value = node[key];
+        if (Array.isArray(value)) { for (const child of value) walk(child, visit, node); }
         else walk(value, visit, node);
     }
 }

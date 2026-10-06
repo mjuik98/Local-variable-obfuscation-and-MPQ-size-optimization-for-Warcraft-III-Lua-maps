@@ -387,3 +387,10 @@ test('CLI toggles FourCC folding, editor data cleanup and listfile removal', () 
         assert.throws(() => parseArguments(['--show-settings', ...options]), options.join(' '));
     }
 });
+
+test('CLI selects Zopfli compression candidates explicitly', () => {
+    assert.equal(parseArguments(['--show-settings', '--zopfli']).overrides.compression.zopfli, true);
+    assert.equal(parseArguments(['--show-settings', '--no-zopfli']).overrides.compression.zopfli, false);
+    assert.throws(() => parseArguments(['--show-settings', '--zopfli', '--no-zopfli']));
+    assert.throws(() => parseArguments(['--show-settings', '--zopfli', '--zopfli']));
+});

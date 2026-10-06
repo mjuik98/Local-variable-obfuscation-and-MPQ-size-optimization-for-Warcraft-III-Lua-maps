@@ -357,3 +357,18 @@ test('a sector size change refuses unsupported shifts, encrypted unnamed blocks 
     const opaque = createTestMap([['file.bin', { data: Buffer.from('opaque'), flags: 0x80000100 }]]);
     assert.throws(() => openMap(opaque).resector({ shift: 4 }), /PKWARE|Unsupported MPQ block flags/);
 });
+
+test('optional Zopfli candidates never enlarge sectors and stay readable with zlib', () => {
+    const text = Buffer.from(Array.from({ length: 600 }, (_, index) => 'local value' + (index % 37) + ' = "entry ' + (index * 7 % 101) + '"\n').join(''));
+    const random = Buffer.from(Array.from({ length: 3000 }, (_, index) => (index * 2654435761 >>> 13) & 255));
+    const source = createTestMap([['script.lua', text], ['noise.bin', random]], { attributes: true, sectorShift: 3 });
+    const plain = openMap(source).optimize({ levels: [9] }), better = openMap(source).optimize({ levels: [9], zopfli: true });
+    for (const name of ['script.lua', 'noise.bin']) assert.deepEqual(openMap(better).read(name), openMap(source).read(name));
+    const size = (bytes, index) => openMap(bytes).inspect().blocks[index].packedSize;
+    assert(size(better, 0) < size(plain, 0), 'Zopfli finds a smaller stream for repetitive text');
+    assert(size(better, 1) <= size(plain, 1));
+    assert.deepEqual(openMap(source).optimize({ levels: [9], zopfli: true }), better, 'Zopfli output is reproducible');
+    const rebuilt = openMap(source).resector({ shift: 4, levels: [9], zopfli: true });
+    assert.deepEqual(openMap(rebuilt).read('script.lua'), text);
+    assert.throws(() => openMap(source).optimize({ zopfli: 'yes' }), /zopfli must be boolean/);
+});

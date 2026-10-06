@@ -10,9 +10,10 @@ function walk(node, visit, functionDepth = 0) {
     if (!node || typeof node !== 'object') return;
     if (node.type) visit(node, functionDepth);
     const depth = functionDepth + Number(node.type === 'FunctionDeclaration');
-    for (const [key, value] of Object.entries(node)) {
+    for (const key in node) {
         if (ignored.has(key)) continue;
-        if (Array.isArray(value)) value.forEach(child => walk(child, visit, depth));
+        const value = node[key];
+        if (Array.isArray(value)) { for (const child of value) walk(child, visit, depth); }
         else if (value?.type) walk(value, visit, depth);
     }
 }

@@ -106,6 +106,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--no-compress` | 재압축 최적화 해제; MPQ 빈 공간 회수는 유지 |
 | `--sector-size-shift N` | MPQ sector를 `512 × 2^N` 바이트(N = 3..8)로 바꾸고 전체 재압축 (실험) |
 | `--keep-sector-size` | 설정 파일에서 지정한 sector 크기 변경 해제 |
+| `--zopfli` / `--no-zopfli` | 압축이 잘 되는 sector에 Zopfli zlib 후보 추가 켜기 / 끄기 (느림) |
 | `--keep-local Name` | 해당 local 이름의 모든 바인딩 보존; 반복 지정 가능 |
 | `--keep-file Path` | 정리 후보 보존; 반복 지정 가능 |
 | `--exclude-compress Path` | 해당 파일의 추가 재압축 제외; 반복 지정 가능 |
@@ -138,6 +139,8 @@ npm run protect -- "C:\Maps\MyMap.w3x" --check --details --compression-strategy 
 ```
 
 압축 전략은 `default`, `filtered`, `huffman-only`, `rle`, `fixed`다. 레벨과 전략의 모든 선택 조합을 기존 sector 구조 안에서 시험하고, 비압축·현재 packed 결과와 비교해 작은 것만 선택한다. 후보를 늘리면 처리 시간이 증가하며 모든 맵에서 추가 절감이 생기는 것은 아니다. locale·alias·암호화·미열거 파일의 보존 제한은 유지한다. `--no-compress`로 재압축을 끄면 추가 전략도 재압축에 사용하지 않는다.
+
+`compression.zopfli` 또는 `--zopfli`는 zlib가 10% 이상 줄이는 sector에 한해 [Zopfli](https://github.com/google/zopfli)로 만든 zlib 스트림도 후보로 비교한다. 결과는 일반 zlib 스트림이라 게임의 압축 해제 방식은 같다. 보호한 LoTKT Lua 1 MiB 표본에서 zlib 9보다 64 KiB sector는 약 5.3%, 4 KiB sector는 약 2.8% 작았고, 처리 시간은 MiB당 각각 약 6초, 20초였다. 텍스처·오디오처럼 거의 압축되지 않는 sector는 건너뛴다. 처리 시간이 크게 늘어나므로 기본값은 꺼져 있다.
 
 ## 보호 강화와 문자열 숨김
 
@@ -286,7 +289,8 @@ npm run protect -- "C:\Maps\Reviewed.w3x" --check --hide-strings --clean-editor 
     "levels": [6, 9],
     "strategies": ["default"],
     "excludeFiles": [],
-    "sectorSizeShift": null
+    "sectorSizeShift": null,
+    "zopfli": false
   }
 }
 ```
@@ -324,5 +328,3 @@ git diff --check
 게임에서는 초기 로딩·UI·리소스·native 등록, 기존 저장 데이터 읽기와 새 저장, 스킬·보스·피해·오더 동작을 확인한다. 2인 이상 환경에서 같은 실행 흐름의 동기화도 확인해야 한다. 문자열 숨김은 로딩 시간과 메모리, 리소스 표시는 시각 품질을 따로 비교한다. VM 대상은 반환값과 반복 실행 중 성능도 비교한다. 전역·필드 이름 변경과 엔진 함수 숨김은 모든 트리거·저장/불러오기·콜백 경로를, sector 크기 변경은 맵 로딩과 모든 리소스 표시를 확인한다. 정리 계약의 정적 검토만으로 이 항목이 검증되지는 않는다.
 
 MPQ 기반은 LoTKT의 `build/mpq.mjs`에서 독립 복사한 뒤 이 저장소에서 확장했다. 실행 시 LoTKT 소스나 빌드 모듈을 import하지 않는다. LoTKT 빌드는 원래 저장소의 지침과 설정을 따른다.
-
-기능 참고: [W3Protect 소개](https://w3protect.eu/). 공개 기능을 참고한 독자 구현이며 동일한 내부 구현이나 보호 강도를 보장하지 않는다. 형식 참고: [W3I 28..33 명세](https://github.com/ChiefOfGxBxL/WC3MapSpecification/blob/master/Info/0-33.md), [wc3libs W3I](https://github.com/inwc3/wc3libs/blob/master/src/main/java/net/moonlightflower/wc3libs/bin/app/W3I.java), [wc3libs IMP](https://github.com/inwc3/wc3libs/blob/master/src/main/java/net/moonlightflower/wc3libs/bin/app/IMP.java). Lua 파싱은 [luaparse](https://github.com/fstirlitz/luaparse)를 사용한다.

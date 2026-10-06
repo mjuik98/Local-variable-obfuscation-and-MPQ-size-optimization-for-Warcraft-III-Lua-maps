@@ -51,6 +51,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --no-compress           Skip compression optimization
 --sector-size-shift <n> Rebuild the MPQ with 512*2^n byte sectors, n = 3..8 (experimental)
 --keep-sector-size      Keep the input MPQ sector size
+--zopfli                Also try Zopfli zlib streams for compressible sectors (slow)
+--no-zopfli             Use only Node zlib candidates
 --keep-local <name>     Preserve a local name (repeatable)
 --keep-file <path>      Preserve a cleanup candidate (repeatable)
 --exclude-compress <path> Skip recompression of an entry (repeatable)
@@ -107,6 +109,9 @@ export function parseArguments(args) {
         } else if (argument === '--remove-listfile' || argument === '--keep-listfile') {
             assert(!seen.has('--remove-listfile') && !seen.has('--keep-listfile'), '--remove-listfile conflicts with --keep-listfile');
             unique(argument); parsed.overrides.cleanup.listfile = argument === '--remove-listfile';
+        } else if (argument === '--zopfli' || argument === '--no-zopfli') {
+            assert(!seen.has(argument === '--zopfli' ? '--no-zopfli' : '--zopfli'), '--zopfli conflicts with --no-zopfli');
+            unique(argument); parsed.overrides.compression.zopfli = argument === '--zopfli';
         } else if (argument === '--no-compress') {
             unique(argument); parsed.overrides.compression.enabled = false;
         } else if (argument === '--hide-strings' || argument === '--no-hide-strings') {
