@@ -11,7 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "node --input-type=module -e \"for (const name of ['seed', 'engine-names', 'mpq', 'lua-syntax', 'lua-names', 'lua', 'string-codec', 'strings', 'vm', 'natives', 'config', 'presets', 'map-info', 'cleanup', 'cleanup-review', 'savings', 'protect', 'output', 'publication', 'jobs', 'desktop', 'cli']) await import('./src/' + name + '.mjs');\"",
+    "check": "node --input-type=module -e \"for (const name of ['seed', 'engine-names', 'zopfli', 'compress', 'mpq', 'lua-syntax', 'lua-names', 'lua', 'string-codec', 'strings', 'vm', 'natives', 'config', 'presets', 'map-info', 'cleanup', 'cleanup-review', 'savings', 'protect', 'output', 'publication', 'jobs', 'desktop', 'cli']) await import('./src/' + name + '.mjs');\"",
     "test": "node --test test/*.test.mjs",
     "protect": "node src/cli.mjs",
     "package:windows": "node scripts/package-windows.mjs"

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createCipheriv, createHash } from 'node:crypto';
-import { validateSeed } from './seed.mjs';
+import { createSeededRandom, validateSeed } from './seed.mjs';
 
 // RFC 8439 ChaCha20. Key material is present in the map: this codec hides
 // literals from static inspection, rather than storing a client-side secret.
@@ -47,32 +47,65 @@ function packedWords(bytes) {
     return words;
 }
 
+const helperRoles = ['bytes', 'payloads', 'cache', 'quarter', 'qx', 'qa', 'qb', 'qc', 'qd', 'qe', 'qf', 'qg', 'qh',
+    'id', 'value', 'data', 'length', 'state', 'work', 'pieces', 'height', 'offset', 'index', 'word', 'text', 'level', 'result'];
+const helperNames = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+function shuffle(values, random) {
+    const result = [...values];
+    for (let index = result.length - 1; index > 0; index--) {
+        const other = random() % (index + 1);
+        [result[index], result[other]] = [result[other], result[index]];
+    }
+    return result;
+}
+
+// The helper's local names, independent statement order, quarter-round call
+// order within each round and constant words (written as XOR pairs) vary with
+// the key material, so the generated code has no fixed textual signature.
+// The decoded bytes do not depend on these choices.
 export function buildRuntimeStringHelper(helper, records, { key, noncePrefix }) {
     assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(helper), 'Invalid runtime string helper identifier');
     assert(Buffer.isBuffer(key) && key.length === 32 && Buffer.isBuffer(noncePrefix) && noncePrefix.length === 8,
         'Invalid runtime string key material');
+    const random = createSeededRandom(createHash('sha256').update('WarcraftLuaProtector/runtime-helper-shape\0').update(key).update(noncePrefix).digest('hex'));
+    const names = Object.fromEntries(shuffle(helperNames, random).slice(0, helperRoles.length).map((name, index) => [helperRoles[index], name]));
+    const { bytes: B, payloads: P, cache: C, quarter: Q, qx, qa, qb, qc, qd, qe, qf, qg, qh,
+        id: I, value: V, data: D, length: N, state: Z, work: X, pieces: O, height: H, offset: A, index: J, word: W, text: T, level: U, result: R } = names;
+    const masked = word => {
+        const mask = random() >>> 0;
+        return '(' + hexWord((word ^ mask) >>> 0) + '~' + hexWord(mask) + ')';
+    };
+    const words = buffer => Array.from({ length: buffer.length / 4 }, (_, index) => buffer.readUInt32LE(index * 4));
     const bytes = Array.from({ length: 256 }, (_, value) => '"\\' + String(value).padStart(3, '0') + '"').join(',');
     const payloads = records.map(record => '{' + [record.cipher.length, ...packedWords(record.cipher)].join(',') + '}').join(',');
-    const initial = ['0x61707865', '0x3320646e', '0x79622d32', '0x6b206574', ...packedWords(key), '1', ...packedWords(noncePrefix), 'i-1'].join(',');
-    // Mask every addition and rotation to the same 32-bit word in Lua's
+    const initial = [...[0x61707865, 0x3320646e, 0x79622d32, 0x6b206574, ...words(key)].map(masked), '1',
+        ...words(noncePrefix).map(masked), I + '-1'].join(',');
+    // Mask every addition, XOR and rotation to the same 32-bit word in Lua's
     // normal 64-bit integers and Fengari's signed 32-bit integers. Hex
     // literals remain integers in both implementations, including high bits.
-    const quarter = 'local function q(x,a,b,c,d)local e,f,g,h=x[a],x[b],x[c],x[d];' +
-        'e=(e+f)&0xffffffff;h=h~e;h=((h<<16)|(h>>16))&0xffffffff;' +
-        'g=(g+h)&0xffffffff;f=f~g;f=((f<<12)|(f>>20))&0xffffffff;' +
-        'e=(e+f)&0xffffffff;h=h~e;h=((h<<8)|(h>>24))&0xffffffff;' +
-        'g=(g+h)&0xffffffff;f=f~g;f=((f<<7)|(f>>25))&0xffffffff;x[a],x[b],x[c],x[d]=e,f,g,h end;';
+    const quarter = 'local function ' + Q + '(' + [qx, qa, qb, qc, qd].join(',') + ')local ' + [qe, qf, qg, qh].join(',') + '=' +
+        [qa, qb, qc, qd].map(name => qx + '[' + name + ']').join(',') + ';' +
+        `${qe}=(${qe}+${qf})&0xffffffff;${qh}=${qh}~${qe};${qh}=((${qh}<<16)|(${qh}>>16))&0xffffffff;` +
+        `${qg}=(${qg}+${qh})&0xffffffff;${qf}=${qf}~${qg};${qf}=((${qf}<<12)|(${qf}>>20))&0xffffffff;` +
+        `${qe}=(${qe}+${qf})&0xffffffff;${qh}=${qh}~${qe};${qh}=((${qh}<<8)|(${qh}>>24))&0xffffffff;` +
+        `${qg}=(${qg}+${qh})&0xffffffff;${qf}=${qf}~${qg};${qf}=((${qf}<<7)|(${qf}>>25))&0xffffffff;` +
+        [qa, qb, qc, qd].map(name => qx + '[' + name + ']').join(',') + '=' + [qe, qf, qg, qh].join(',') + ' end;';
+    // Quarter rounds within one column or diagonal round touch disjoint words.
+    const round = groups => shuffle(groups, random).map(group => Q + '(' + X + ',' + group.join(',') + ');').join('');
+    const columns = round([[1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15], [4, 8, 12, 16]]);
+    const diagonals = round([[1, 6, 11, 16], [2, 7, 12, 13], [3, 8, 9, 14], [4, 5, 10, 15]]);
+    const declarations = shuffle(['local ' + B + '={' + bytes + '};', 'local ' + P + '={' + payloads + '};', 'local ' + C + '={};', quarter], random).join('');
     // Four cipher bytes occupy one number slot. Decode only on first use,
     // combine four-byte pieces through a balanced tree, then release the
     // ciphertext table. There are no global/library/native/RNG dependencies.
-    return 'local ' + helper + '=(function()local b={' + bytes + '};local p={' + payloads + '};local c={};' + quarter +
-        'return function(i)local v=c[i];if v~=nil then return v end;local d=p[i];local n=d[1];local z={' + initial + '};local x={};local o={};local h=0;local a=0;' +
-        'while a<n do for j=1,16 do x[j]=z[j] end;for j=1,10 do ' +
-        'q(x,1,5,9,13);q(x,2,6,10,14);q(x,3,7,11,15);q(x,4,8,12,16);' +
-        'q(x,1,6,11,16);q(x,2,7,12,13);q(x,3,8,9,14);q(x,4,5,10,15) end;' +
-        'for j=1,16 do if a<n then local w=d[a//4+2]~((x[j]+z[j])&0xffffffff);local t=b[(w&255)+1];' +
-        'if a+1<n then t=t..b[((w>>8)&255)+1] end;if a+2<n then t=t..b[((w>>16)&255)+1] end;' +
-        'if a+3<n then t=t..b[((w>>24)&255)+1] end;local u=1;while o[u]~=nil do t=o[u]..t;o[u]=nil;u=u+1 end;' +
-        'o[u]=t;if u>h then h=u end;a=a+4 end end;z[13]=(z[13]+1)&0xffffffff end;' +
-        'local r="";for j=h,1,-1 do if o[j]~=nil then r=r..o[j] end end;c[i]=r;p[i]=nil;return r end end)();\n';
+    return 'local ' + helper + '=(function()' + declarations +
+        `return function(${I})local ${V}=${C}[${I}];if ${V}~=nil then return ${V} end;local ${D}=${P}[${I}];local ${N}=${D}[1];` +
+        `local ${Z}={${initial}};for ${J}=1,16 do ${Z}[${J}]=${Z}[${J}]&0xffffffff end;local ${X}={};local ${O}={};local ${H}=0;local ${A}=0;` +
+        `while ${A}<${N} do for ${J}=1,16 do ${X}[${J}]=${Z}[${J}] end;for ${J}=1,10 do ${columns}${diagonals} end;` +
+        `for ${J}=1,16 do if ${A}<${N} then local ${W}=${D}[${A}//4+2]~((${X}[${J}]+${Z}[${J}])&0xffffffff);local ${T}=${B}[(${W}&255)+1];` +
+        `if ${A}+1<${N} then ${T}=${T}..${B}[((${W}>>8)&255)+1] end;if ${A}+2<${N} then ${T}=${T}..${B}[((${W}>>16)&255)+1] end;` +
+        `if ${A}+3<${N} then ${T}=${T}..${B}[((${W}>>24)&255)+1] end;local ${U}=1;while ${O}[${U}]~=nil do ${T}=${O}[${U}]..${T};${O}[${U}]=nil;${U}=${U}+1 end;` +
+        `${O}[${U}]=${T};if ${U}>${H} then ${H}=${U} end;${A}=${A}+4 end end;${Z}[13]=(${Z}[13]+1)&0xffffffff end;` +
+        `local ${R}="";for ${J}=${H},1,-1 do if ${O}[${J}]~=nil then ${R}=${R}..${O}[${J}] end end;${C}[${I}]=${R};${P}[${I}]=nil;return ${R} end end)();\n`;
 }

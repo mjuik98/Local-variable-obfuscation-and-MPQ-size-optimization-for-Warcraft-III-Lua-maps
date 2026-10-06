@@ -5,11 +5,8 @@ import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { normalizeCompressionStrategies, SUPPORTED_OUTPUT_SECTOR_SHIFTS } from './config.mjs';
-import { zopfliZlib } from './zopfli.mjs';
+import { compressSectors } from './compress.mjs';
 
-const zlibStrategies = Object.freeze({ default: zlib.constants.Z_DEFAULT_STRATEGY,
-    filtered: zlib.constants.Z_FILTERED, 'huffman-only': zlib.constants.Z_HUFFMAN_ONLY,
-    rle: zlib.constants.Z_RLE, fixed: zlib.constants.Z_FIXED });
 const crypt = new Uint32Array(1280);
 const mapStates = new WeakMap();
 const canonicalName = name => name.replaceAll('/', '\\').toUpperCase();
@@ -307,35 +304,32 @@ export function openMap(input) {
         return result;
     }
 
-    // Encrypted blocks keep a sector table even when no sector compresses,
-    // since encrypted raw sector data cannot be read back.
-    function encode(contents, levels, strategies, size = sectorSize, keepSectors = false, zopfli = false) {
-        const count = Math.ceil(contents.length / size);
-        const sectors = Buffer.alloc((count + 1) * 4), chunks = [sectors];
-        let cursor = sectors.length;
-        for (let i = 0; i < count; i++) {
-            sectors.writeUInt32LE(cursor, i * 4);
-            const raw = contents.subarray(i * size, (i + 1) * size);
-            let best = raw;
-            for (const level of levels) for (const strategy of strategies) {
-                // Level zero adds a zlib wrapper and stored-block framing, so
-                // it can never beat the already available raw sector.
-                if (level === 0) continue;
-                const candidate = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw, { level, strategy: zlibStrategies[strategy] })]);
-                if (candidate.length < best.length) best = candidate;
+    // Encode files with one batch of sectors, so large and small files share
+    // the compression threads. Encrypted blocks keep a sector table even when
+    // no sector compresses, since encrypted raw sector data cannot be read back.
+    function encodeMany(items, levels, strategies, zopfli) {
+        const sectors = [];
+        const layout = items.map(({ contents, size = sectorSize }) => {
+            const first = sectors.length, count = Math.ceil(contents.length / size);
+            for (let i = 0; i < count; i++) sectors.push(contents.subarray(i * size, (i + 1) * size));
+            return { first, count };
+        });
+        const packed = compressSectors(sectors, { levels, strategies, zopfli });
+        return items.map(({ contents, keepSectors = false }, item) => {
+            const { first, count } = layout[item], table = Buffer.alloc((count + 1) * 4), chunks = [table];
+            let cursor = table.length;
+            for (let i = 0; i < count; i++) {
+                table.writeUInt32LE(cursor, i * 4);
+                chunks.push(packed[first + i]);
+                cursor += packed[first + i].length;
             }
-            // Zopfli runs only where zlib already saves at least 10%; nearly
-            // incompressible sectors (textures, audio) cannot repay its cost.
-            if (zopfli && best.length < raw.length * 0.9) {
-                const candidate = Buffer.concat([Buffer.from([2]), zopfliZlib(raw)]);
-                if (candidate.length < best.length) best = candidate;
-            }
-            chunks.push(best);
-            cursor += best.length;
-        }
-        sectors.writeUInt32LE(cursor, count * 4);
-        const compressed = Buffer.concat(chunks);
-        return keepSectors || compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
+            table.writeUInt32LE(cursor, count * 4);
+            const compressed = Buffer.concat(chunks);
+            return keepSectors || compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
+        });
+    }
+    function encode(contents, levels, strategies, zopfli) {
+        return encodeMany([{ contents }], levels, strategies, zopfli)[0];
     }
     function compressionLevels(levels = [6, 9]) {
         assert(Array.isArray(levels) && levels.length > 0 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'Invalid zlib compression levels');
@@ -355,12 +349,17 @@ export function openMap(input) {
         assert(![...changes.keys()].some(name => canonicalName(name) === '(SIGNATURE)'), 'Signed maps are not supported');
         const canonical = canonicalName;
         assert.equal(new Set([...changes.keys()].map(canonical)).size, changes.size, 'Duplicate MPQ paths');
+        const same = new Map();
         for (const [name, contents] of changes) {
             assert(name.length > 0 && !/[\0\r\n]/.test(name), 'Invalid MPQ entry name');
             assert(Buffer.isBuffer(contents), 'Replacement contents must be a Buffer');
-            const index = indexOf(name), identical = read(name, true)?.equals(contents);
-            if (identical && !options.recompress) { changes.delete(name); continue; }
-            const candidate = encode(contents, levels, strategies, sectorSize, false, zopfli);
+            const identical = read(name, true)?.equals(contents);
+            if (identical && !options.recompress) changes.delete(name);
+            else same.set(name, identical);
+        }
+        const candidates = encodeMany([...changes.values()].map(contents => ({ contents })), levels, strategies, zopfli);
+        for (const [position, [name]] of [...changes].entries()) {
+            const index = indexOf(name), identical = same.get(name), candidate = candidates[position];
             if (identical && candidate.data.length >= blockTable.readUInt32LE(index * 16 + 4)) { changes.delete(name); continue; }
             if (index >= 0) {
                 const references = metadata.blocks[index].hashReferences;
@@ -444,7 +443,7 @@ export function openMap(input) {
         let cursor = bytes.length;
         for (const [name, contents] of changes) {
             // Warcraft requires sector tables; single-unit compressed entries are never emitted.
-            const { data, flags } = encoded.get(name) ?? encode(contents, levels, strategies, sectorSize, false, zopfli);
+            const { data, flags } = encoded.get(name) ?? encode(contents, levels, strategies, zopfli);
             const p = indices.get(name) * 16;
             blocks.writeUInt32LE(cursor - offset, p);
             blocks.writeUInt32LE(data.length, p + 4);
@@ -585,8 +584,12 @@ export function openMap(input) {
             const flags = blockTable.readUInt32LE(index * 16 + 12), name = names.get(index) ?? null, label = name ?? '#' + index;
             assert.equal(flags & ~0x80030200, 0, 'Unsupported MPQ block flags for a sector size change: ' + label);
             if (flags & 0x10000) assert(name !== null && metadata.blocks[index].hashReferences === 1, 'An encrypted MPQ block needs exactly one known name for a sector size change: ' + label);
-            const contents = readBlock(index, name), encoded = encode(contents, levels, strategies, size, Boolean(flags & 0x10000), zopfli);
-            return { index, name, contents, data: encoded.data, flags: ((flags & ~0x200) | (encoded.flags & 0x200)) >>> 0 };
+            return { index, name, flags, contents: readBlock(index, name) };
+        });
+        const encodings = encodeMany(entries.map(entry => ({ contents: entry.contents, size, keepSectors: Boolean(entry.flags & 0x10000) })), levels, strategies, zopfli);
+        entries.forEach((entry, position) => {
+            entry.data = encodings[position].data;
+            entry.flags = ((entry.flags & ~0x200) | (encodings[position].flags & 0x200)) >>> 0;
         });
         const blocks = Buffer.from(blockTable), chunks = [bytes.subarray(0, offset + 32)];
         let cursor = 32;

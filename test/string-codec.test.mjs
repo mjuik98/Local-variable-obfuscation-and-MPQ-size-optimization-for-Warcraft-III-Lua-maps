@@ -75,7 +75,9 @@ test('first use releases packed cipher data and later calls reuse exactly the de
         const value = Buffer.from('cached actual bytes 한글');
         const cipher = cryptRuntimeString(value, material.key, runtimeStringNonce(material.noncePrefix, 1));
         const source = buildRuntimeStringHelper('decode', [{ cipher }], material) +
-            'local p,c;for j=1,10 do local name,value=debug.getupvalue(decode,j);if name=="p" then p=value elseif name=="c" then c=value end end;' +
+            // Local names vary with the key, so find the payload and cache tables by shape.
+            'local p,c;for j=1,10 do local name,value=debug.getupvalue(decode,j);if type(value)=="table" then ' +
+            'if type(value[1])=="table" then p=value elseif next(value)==nil then c=value end end end;' +
             'assert(p[1]~=nil and c[1]==nil);local first=decode(1);assert(p[1]==nil and c[1]==first);p[1]={0};' +
             'local second=decode(1);assert(second==first and p[1]~=nil);return first,second';
         const status = lauxlib.luaL_dostring(state, to_luastring(source));
@@ -83,4 +85,21 @@ test('first use releases packed cipher data and later calls reuse exactly the de
         assert.deepEqual(Buffer.from(lua.lua_tolstring(state, 1)), value);
         assert.deepEqual(Buffer.from(lua.lua_tolstring(state, 2)), value);
     } finally { lua.lua_close(state); }
+});
+
+test('helper shape varies with the key without changing decoded bytes', () => {
+    const value = Buffer.from('shape independent text 한글');
+    const helpers = ['seed one', 'seed two'].map(seed => {
+        const material = deriveRuntimeStringKey(seed, 'source');
+        const cipher = cryptRuntimeString(value, material.key, runtimeStringNonce(material.noncePrefix, 1));
+        return buildRuntimeStringHelper('decode', [{ cipher }], material);
+    });
+    assert.notEqual(helpers[0].replace(/\{\{.*?\}\}/, ''), helpers[1].replace(/\{\{.*?\}\}/, ''));
+    for (const helper of helpers) {
+        assert(!/0x61707865|0x3320646e|0x79622d32|0x6b206574/.test(helper), 'ChaCha constants are not written literally');
+        assert.deepEqual(decodeWithLua(helper + 'return decode(1)')[0], value);
+    }
+    const material = deriveRuntimeStringKey('seed one', 'source');
+    const cipher = cryptRuntimeString(value, material.key, runtimeStringNonce(material.noncePrefix, 1));
+    assert.equal(buildRuntimeStringHelper('decode', [{ cipher }], material), helpers[0], 'The shape is reproducible');
 });

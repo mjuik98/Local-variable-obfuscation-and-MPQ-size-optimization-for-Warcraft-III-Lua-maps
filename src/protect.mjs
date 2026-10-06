@@ -51,7 +51,7 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     const luaInput = vm.prepared ?? prepared;
     const transformed = luaInput.transform(config.lua, { prepareOutput: config.strings.enabled || config.lua.hideNatives || config.lua.foldFourCC });
     const runtimeStrings = config.strings.enabled && config.strings.mode === 'runtime';
-    const natives = transformNatives(transformed.code, { enabled: config.lua.hideNatives, encryptNames: runtimeStrings, foldFourCC: config.lua.foldFourCC },
+    const natives = transformNatives(transformed.code, { enabled: config.lua.hideNatives, encryptNames: runtimeStrings, foldFourCC: config.lua.foldFourCC, seed: config.lua.seed },
         { prepared: transformed.prepared, prepareOutput: config.strings.enabled });
     const strings = transformStrings(natives.code, config.strings, { prepared: natives.prepared, seed: config.lua.seed, forced: natives.forcedLiterals });
     const finalScript = Buffer.from(strings.code);
@@ -101,6 +101,8 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
         bytes: result,
         summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], mapInfoVersion: info.version,
             lua: { ...transformed.stats, inputBytes: scriptBytes.length, outputBytes: finalScript.length }, natives: natives.stats, strings: strings.stats, vm: vm.stats,
-            sectorSize: openMap(result).inspect().sectorSize, savings: savings.summary() },
+            sectorSize: openMap(result).inspect().sectorSize, savings: savings.summary(),
+            // Compressed bytes depend on the zlib build; record it with the result.
+            environment: { node: process.version, zlib: process.versions.zlib } },
     };
 }

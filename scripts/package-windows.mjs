@@ -26,6 +26,7 @@ try {
     }
     fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ name: packageInfo.name, version: packageInfo.version, private: true, type: 'module' }, null, 2) + '\n');
     fs.copyFileSync(path.join(root, 'README.md'), path.join(stage, 'README.md'));
+    fs.cpSync(path.join(root, 'docs'), path.join(stage, 'docs'), { recursive: true });
     fs.cpSync(path.join(root, 'cleanup'), path.join(stage, 'cleanup'), { recursive: true });
     // Carry the exact runtime's third-party notices. A failed license download
     // aborts packaging; no silently incomplete distribution is published.

@@ -629,6 +629,8 @@ namespace WarcraftLuaProtectorDesktop
             IDictionary<string, object> natives = Value(summary, "natives") as IDictionary<string, object>;
             if (Value(lua, "renamedGlobals") != null || Value(lua, "renamedFields") != null || NumberValue(natives, "hiddenNatives") > 0 || NumberValue(natives, "hiddenLibraryFunctions") > 0 || NumberValue(natives, "foldedFourCC") > 0)
                 report.AppendLine("전역 이름 변경: " + NumberValue(lua, "renamedGlobals") + "개   필드 이름 변경: " + NumberValue(lua, "renamedFields") + "개 (닫힌 테이블 " + NumberValue(lua, "closedTables") + "개)   엔진 함수 숨김: " + NumberValue(natives, "hiddenNatives") + "개   라이브러리 함수 숨김: " + NumberValue(natives, "hiddenLibraryFunctions") + "개   FourCC 치환: " + NumberValue(natives, "foldedFourCC") + "개 (실험)");
+            IDictionary<string, object> environment = Value(summary, "environment") as IDictionary<string, object>;
+            if (environment != null) report.AppendLine("처리 환경: Node " + TextValue(environment, "node") + " · zlib " + TextValue(environment, "zlib") + " (같은 환경에서 같은 결과를 재현)");
             report.AppendLine("MPQ 섹터 크기: " + FormatBytes(Value(summary, "sectorSize")) + (NumberValue(summary, "sectorSize") != 4096 ? " (기본 4 KiB와 다름 · 실험 · 게임 검증 필요)" : ""));
             IDictionary<string, object> cache = Value(message, "cache") as IDictionary<string, object>; lastCacheReused = BoolValue(cache, "reused");
             if (cache != null) { report.AppendLine("검사 결과: " + (lastCacheReused ? "이전 검증 결과 재사용" : "새 검사") + " · 처리 시간 " + Seconds(Value(message, "elapsedMs"))); report.AppendLine(BoolValue(cache, "retained") ? "이 결과를 메모리에 보관했습니다. 같은 입력 · 설정의 다음 작업에서 재사용합니다." : "이 결과는 메모리에 보관하지 않습니다. 다음 작업에서 다시 검사합니다."); }

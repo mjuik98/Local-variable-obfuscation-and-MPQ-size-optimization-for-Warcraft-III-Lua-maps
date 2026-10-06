@@ -41,7 +41,8 @@ test('engine functions resolve through one local table on first use with identic
     assert.deepEqual(runMain(result.code), expected);
     assert.equal(result.stats.hiddenNatives, 4);
     assert.equal(result.stats.hiddenLibraryFunctions, 1, 'tostring is a fixed Lua base function');
-    assert(/^local [A-Za-z]+=\(function\(s\)return setmetatable/.test(result.code));
+    assert(/^local [A-Za-z]+=\(function\([A-Za-z]\)return setmetatable/.test(result.code));
+    assert.notEqual(transformNatives(SCRIPT, { enabled: true, seed: 'other seed' }).code.split('\n')[0], result.code.split('\n')[0], 'Inner names follow the seed');
     assert(!/GetUnitX\(|I2S\(/.test(result.code.split('\n').slice(1).join('\n')), 'Call sites no longer name engine functions');
     assert(result.code.includes('bj_lastCreatedUnit'), 'Engine variables remain direct global reads');
     assert.deepEqual(transformNatives(SCRIPT, { enabled: true }), result, 'Native hiding is deterministic');

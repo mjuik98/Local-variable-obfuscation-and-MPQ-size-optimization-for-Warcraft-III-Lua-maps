@@ -3,6 +3,7 @@ import { analyzeGlobalNames, assertLuaResourceLimits, assertRuntimeRewriteSafe, 
     resolveLuaBindings, shortLuaName } from './lua.mjs';
 import { ENGINE_FUNCTIONS } from './engine-names.mjs';
 import { literalString } from './lua-syntax.mjs';
+import { createSeededRandom, validateSeed } from './seed.mjs';
 
 const ignored = new Set(['range', 'loc', 'comments', 'globals']);
 // Lua base functions with fixed behavior. Loaders and memory control stay
@@ -69,7 +70,8 @@ function rawcodeValue(argument) {
 // Names the script assigns or writes through _G, declared engine variables
 // (bj_* and constants) and libraries used other than by static reads stay
 // direct. Optionally FourCC calls with a literal rawcode become integers.
-export function transformNatives(code, { enabled = false, encryptNames = false, foldFourCC = false } = {}, { prepared, prepareOutput = false } = {}) {
+export function transformNatives(code, { enabled = false, encryptNames = false, foldFourCC = false, seed = 'warcraft-lua-protector' } = {}, { prepared, prepareOutput = false } = {}) {
+    validateSeed(seed);
     assert.equal(typeof enabled, 'boolean', 'lua.hideNatives must be boolean');
     assert.equal(typeof encryptNames, 'boolean', 'encryptNames must be boolean');
     assert.equal(typeof foldFourCC, 'boolean', 'lua.foldFourCC must be boolean');
@@ -143,8 +145,15 @@ export function transformNatives(code, { enabled = false, encryptNames = false, 
             }
         });
         const withFields = entries.some(entry => entry.field !== null);
-        const head = 'local ' + table + '=(function(s' + (withFields ? ',f' : '') + ')return setmetatable({},{__index=function(t,i)local v=_ENV[s[i]];' +
-            (withFields ? 'if f[i] then v=v[f[i]] end;' : '') + 't[i]=v;return v end})end)(';
+        // The table's inner names follow the seed, leaving no fixed signature.
+        const random = createSeededRandom(seed), letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+        for (let index = letters.length - 1; index > 0; index--) {
+            const other = random() % (index + 1);
+            [letters[index], letters[other]] = [letters[other], letters[index]];
+        }
+        const [s, f, t, i, v] = letters;
+        const head = 'local ' + table + '=(function(' + s + (withFields ? ',' + f : '') + ')return setmetatable({},{__index=function(' + t + ',' + i + ')local ' + v + '=_ENV[' + s + '[' + i + ']];' +
+            (withFields ? 'if ' + f + '[' + i + '] then ' + v + '=' + v + '[' + f + '[' + i + ']] end;' : '') + t + '[' + i + ']=' + v + ';return ' + v + ' end})end)(';
         let text = head;
         const list = values => {
             text += '{';
