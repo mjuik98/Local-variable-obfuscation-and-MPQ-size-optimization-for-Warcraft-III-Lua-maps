@@ -1,6 +1,6 @@
 {
   "name": "warcraft-lua-protector",
-  "version": "0.1.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Local protection and optimization tooling for Warcraft III Lua maps",
@@ -11,17 +11,19 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "eslint . && node --input-type=module -e \"import fs from 'node:fs'; for (const name of fs.readdirSync('src').filter(name => name.endsWith('.mjs')).sort()) await import('./src/' + name);\"",
-    "test": "node --test \"test/*.test.mjs\"",
-    "protect": "node src/cli.mjs"
+    "check": "eslint . && node --input-type=module -e \"for (const name of ['seed', 'engine-names', 'zopfli', 'compress', 'mpq', 'lua-syntax', 'lua-names', 'lua', 'string-codec', 'strings', 'vm', 'natives', 'config', 'presets', 'map-info', 'cleanup', 'cleanup-review', 'savings', 'protect', 'output', 'publication', 'jobs', 'desktop', 'cli']) await import('./src/' + name + '.mjs');\"",
+    "test": "node --test test/*.test.mjs",
+    "protect": "node src/cli.mjs",
+    "package:windows": "node scripts/package-windows.mjs"
   },
   "dependencies": {
+    "@gfx/zopfli": "1.0.15",
+    "fengari": "0.1.5",
     "luaparse": "0.3.1"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
     "eslint": "9.39.5",
-    "fengari": "0.1.5",
     "globals": "17.13.0"
   }
 }

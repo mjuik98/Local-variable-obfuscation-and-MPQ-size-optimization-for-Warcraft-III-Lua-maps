@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "inputMapSha256": "7fb4bd96153b66560160d534bae4e9a9cd90e63aff464ab3c18d59de89612e63",
+  "scriptSha256": "2200657376eb1c8ee6e7aa4e5787a3dbe97fb33c4e825d84748786c83c6c82c2",
+  "review": {
+    "dynamicFileAccess": "Fresh explicit review of LoTKT/dist/LoTKT 2.4E.w3x on 2026-10-06: 60,728,762 input map bytes and 8,152,905 root Lua bytes. The actual compiled AST contains one Preloader reference, pcall(Preloader, self.filename) in File.readPreload at line 219139. The two FileIO_Read references at 218071 and 218102 pass MYDATA_FILE_NAME, whose only definition at 218008 is the literal 클랜지키기.txt. The only external FileIO_Write caller at 46951 uses the same literal; FileIO.Init at 219229 writes and reads the literal FileTester.pld. The only filename field definition is File.open at 219105; no additional filename assignments, File.create callers or other external File.open callers were found. The File.open calls at 219202, 219206 and 219210 are File.create/FileIO_Write/FileIO_Read plumbing. The two _G indexes at 1955 and 1957 occur only in the local InventoryNativeCompat.Resolve function; its seven callers at 1965-1971 provide literal native names. InitRegistry.addPreloadFile has 31 literal model-path callers at 79473-79503; the preload consumer at 79143 reads the registry. None of these reviewed file/model/native paths selects a cleanup candidate. No io, require, load, loadfile, dofile, debug, package or _ENV access was found in the compiled AST. Editor data addendum (2026-10-06, same exact input): the editor-generated main at war3map.lua:412-428 calls InitSounds (declared at 100) at 423, CreateRegions (139) at 424 and CreateCameras (236) at 425, so this Lua map builds its sounds, regions and cameras from script values. The compiled Lua contains no string reference to war3map.w3r, war3map.w3c, war3map.w3s or war3map.imp.",
+    "objectAndImportReferences": "Decoded all 909 listed entries plus the explicitly identified (listfile) and (attributes) entries. These 911 names account for all 911 live MPQ blocks in this exact input; no unidentified live block, alias or nonzero locale entry remained. Outside the four cleanup candidates, their filenames occur only in the MPQ listfile inventory and the flag-13 custom-path history row among 873 war3map.imp rows. The 352 decoded MDX payloads and all other decoded named runtime/resource payloads contained no candidate filename references. Parsed and byte-roundtrip checked all fourteen version-3 base/skin unit, ability, item, buff, upgrade, destructible and doodad modification payloads: 8,724 records and 100,888 string fields contained no candidate filename reference. Used the existing LoTKT object reader with destructibles in unit layout and doodads in ability layout, matching the primary mdx-m3-viewer parser definitions. The version-1 receipt matched the 24,895,216-byte history and all twelve recorded object/skin/WTS/import payload hashes. Its recorded sourceHash is fb333ed79a644300586caf4730612d2da67e01278ff66a30eeed9f5e27832dca; the corresponding original source map was not identified and its provenance was not verified. Build code inspection confirms history/receipt are build-time object reconciliation/adoption metadata written separately from executable Lua, and removal preserves the actual object/resource payloads. Editor data addendum: all 910 listed non-listfile entries plus (attributes) decode with the supported formats. Case-insensitive byte searches found no reference to war3map.w3r, war3map.w3c or war3map.w3s in any decoded entry; war3map.imp appears only in lotkt-object-receipt.json build metadata. war3map.w3r (version 7) holds 88 regions, matching the 88 distinct gg_rct_ globals and 91 Rect calls in Lua; war3map.w3c (version 3) holds 1 camera, matching 1 gg_cam_ global and 1 CreateCameraSetup call; war3map.w3s (version 3) holds 7 sounds, matching 7 gg_snd_ globals and 8 CreateSound calls. All 873 war3map.imp rows (version 1) name entries present in the MPQ, so removing the manifest removes no imported payload; Warcraft III reads imported files by MPQ path.",
+    "limitations": "This review applies only to this exact map and script and is an explicit dependency review, not a static proof, complete asset-graph proof or Warcraft III execution validation. The four actual embedded FileIO, MyDataFileLoad, GameResultSaveAdapter and InventoryNativeCompat modules matched the current transformed source bytes; other compiled modules were reviewed as embedded rather than assuming that the whole checkout matches the map. The receipt source-map hash was not matched to an available original map; its source provenance and object adoption were not validated or performed. This does not assert that the current LoTKT.w3x is the build source. External save payloads are assumed to follow the existing FileIO JASS-tooltip data format; modified external scripts, injected runtime code and add-ons are outside the review. Every noncandidate payload and MPQ locale/encryption/attributes/alias contract must remain preserved. Any input or Lua byte change invalidates this contract and requires renewed review unless logically identical repacking is verified by the existing contract-review function. Keep the editable original, history and receipt for World Editor, rebuilding and object adoption. Cleanup applies only to a separately saved distribution/test copy. Actual save loading, gameplay, model appearance, performance and multiplayer synchronization require Warcraft III testing. The editor data candidates are World Editor placement data and the import manifest. Their removal relies on the documented editor-only role of these files and on the matching script definitions above; it was not executed in Warcraft III. Without them World Editor loses regions, cameras, sound definitions and the import list of the distribution copy, so keep the editable original. Test map loading, region events, cameras, sounds and every imported resource in game before distribution."
+  },
+  "files": [
+    {
+      "path": "war3map.wtg",
+      "reason": "Editor trigger definitions are retained in the editable original. This exact map executes the assembled root war3map.lua; the reviewed runtime save/model/native paths do not load the editor trigger-definition payload.",
+      "evidence": [
+        "LoTKT/build/build-lua.mjs:192-235 preserves editor main/config, adds LoTKTLua.Start and the source bundle, and replaces root war3map.lua separately from build metadata.",
+        "Actual compiled war3map.lua:219139 is the single Preloader reference; 218071/218102 use the fixed save filename; 219229 initializes FileTester.pld; 79473-79503 register literal model paths.",
+        "The input war3map.wtg is 10,946 bytes. No parsed base/skin object string or other decoded runtime/resource payload references its filename; the listfile inventory row is bookkeeping."
+      ]
+    },
+    {
+      "path": "war3map.wct",
+      "reason": "Custom editor trigger data is retained in the editable original. This exact input has a 14-byte wct and assembled executable code in root war3map.lua; reviewed runtime file/resource paths do not load wct.",
+      "evidence": [
+        "LoTKT/build/build-lua.mjs:192-235 emits executable source in root war3map.lua.",
+        "The actual compiled FileIO, save and native-lookup modules were byte-matched to current transformed sources; all actual runtime save/model/native callers were reviewed.",
+        "The 14-byte input wct filename is absent from all parsed base/skin object strings and other decoded runtime/resource payloads; its listfile row is inventory only."
+      ]
+    },
+    {
+      "path": "lotkt-object-history.json",
+      "reason": "Build-only object reconciliation/adoption history. The actual object/skin/import/resource payloads remain preserved and the reviewed compiled Lua does not load this metadata. Keep it in the editable/build input.",
+      "evidence": [
+        "LoTKT/build/object-history.mjs:5,14-35,76-151 defines history metadata, registers its custom import path for editor retention and reads it during build-time field reconciliation.",
+        "LoTKT/build/object-history.mjs:156-179 reads history/receipt during object adoption and generates checksums; LoTKT/build/build-lua.mjs:235 adds this metadata separately from the executable Lua.",
+        "The 24,895,216-byte version-1 history matches receipt.historyHash e524b85734622f7e60470f476ee5f67670f1aaf8df90c75caccfb7c243d5a3b6. Candidate filename references outside the candidates are limited to one flag-13 custom import row and the listfile, both updated by cleanup.",
+        "All fourteen object/skin payloads, 352 MDX models and other decoded resource entries contained no candidate reference; actual compiled Lua and reviewed dynamic paths select no history file."
+      ]
+    },
+    {
+      "path": "lotkt-object-receipt.json",
+      "reason": "Build-only object-adoption provenance and checksums. Runtime reads the actual Lua/object/resource payloads rather than this receipt. Retain the receipt in the editable/build input; its original source-map provenance is unverified.",
+      "evidence": [
+        "LoTKT/build/object-history.mjs:156-179 consumes receipt in adoptionEntries and generates it in objectReceipt; LoTKT/build/build-lua.mjs:235 adds it separately from runtime Lua.",
+        "The current 1,179-byte version-1 receipt matches the history and all twelve recorded object/skin/WTS/import payload hashes. The original map matching its recorded sourceHash was not identified, and no object adoption was attempted.",
+        "No compiled Lua, typed object/skin string or model/resource payload references the receipt filename; the only occurrence outside candidates is the MPQ listfile inventory row."
+      ]
+    },
+    {
+      "path": "war3map.w3r",
+      "reason": "Editor region definitions. The Lua CreateRegions function creates the same 88 regions at runtime.",
+      "evidence": [
+        "war3map.lua:139 declares CreateRegions and war3map.lua:424 calls it from the editor-generated main.",
+        "war3map.w3r version 7 lists 88 regions; Lua assigns 88 distinct gg_rct_ globals through 91 Rect calls.",
+        "No decoded entry references war3map.w3r."
+      ]
+    },
+    {
+      "path": "war3map.w3c",
+      "reason": "Editor camera definitions. The Lua CreateCameras function creates the same camera setup at runtime.",
+      "evidence": [
+        "war3map.lua:236 declares CreateCameras and war3map.lua:425 calls it from the editor-generated main.",
+        "war3map.w3c version 3 lists 1 camera; Lua assigns 1 gg_cam_ global through 1 CreateCameraSetup call.",
+        "No decoded entry references war3map.w3c."
+      ]
+    },
+    {
+      "path": "war3map.w3s",
+      "reason": "Editor sound definitions. The Lua InitSounds function creates the same sounds from their file paths at runtime.",
+      "evidence": [
+        "war3map.lua:100 declares InitSounds and war3map.lua:423 calls it from the editor-generated main.",
+        "war3map.w3s version 3 lists 7 sounds; Lua assigns 7 gg_snd_ globals through 8 CreateSound calls.",
+        "No decoded entry references war3map.w3s."
+      ]
+    },
+    {
+      "path": "war3map.imp",
+      "reason": "Editor import manifest. Imported payloads stay in the MPQ and are read by path.",
+      "evidence": [
+        "All 873 version-1 manifest rows name MPQ entries that remain in the archive.",
+        "Only lotkt-object-receipt.json build metadata mentions war3map.imp; no Lua, object, skin, FDF, TOC or model entry does."
+      ]
+    }
+  ]
+}
