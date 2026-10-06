@@ -20,10 +20,18 @@ test('configuration normalizes compression and repeatable names deterministicall
     assert.equal(canonicalPath(resolved.compression.excludeFiles[0]), 'TEXTURES\\TEST.BLP');
 });
 
+test('configuration accepts UTF-8 MPQ paths and folds only ASCII letters', () => {
+    const resolved = resolveConfig({ compression: { excludeFiles: ['textures/한글.blp'] } });
+    assert.deepEqual(resolved.compression.excludeFiles, ['textures/한글.blp']);
+    assert.equal(canonicalPath('textures/한글.blp'), 'TEXTURES\\한글.BLP');
+    // MPQ hashing leaves non-ASCII bytes unchanged, so these are different files.
+    assert.notEqual(canonicalPath('é.blp'), canonicalPath('É.blp'));
+});
+
 test('invalid configuration fails explicitly instead of silently falling back', () => {
     for (const input of [null, [], { unexpected: {} }, { lua: null }, { lua: { rename: true } }, { lua: { minify: 1 } },
         { lua: { keepLocals: ['bad-name'] } }, { cleanup: { keepFiles: ['bad\nname'] } }, { compression: { levels: [] } },
-        { compression: { levels: [10] } }, { compression: { levels: [1.5] } }, { compression: { excludeFiles: ['한글.blp'] } }]) {
+        { compression: { levels: [10] } }, { compression: { levels: [1.5] } }, { compression: { excludeFiles: ['tab\tname.blp'] } }, { cleanup: { keepFiles: ['\ud800.blp'] } }]) {
         assert.throws(() => resolveConfig(input));
     }
 });

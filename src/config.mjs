@@ -17,7 +17,8 @@ function names(values, label, identifier = false) {
     assert(Array.isArray(values), label + ' must be an array');
     assert(values.every(name => typeof name === 'string' && name.length > 0 && !/[\0\r\n]/.test(name)), label + ' contains an invalid name');
     if (identifier) assert(values.every(name => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)), label + ' must contain Lua identifiers');
-    else assert(values.every(name => /^[\x20-\x7e]+$/.test(name)), label + ' supports ASCII MPQ paths only');
+    // MPQ paths are matched as UTF-8 bytes, so they must be well-formed text without control characters.
+    else assert(values.every(name => name.isWellFormed() && !/\p{Cc}/u.test(name)), label + ' must contain printable UTF-8 MPQ paths');
     return [...new Set(values)];
 }
 

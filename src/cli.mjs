@@ -82,12 +82,17 @@ function mergeOverrides(configuration, overrides) {
     }));
 }
 
+function readConfig(configPath) {
+    if (!configPath) return resolveConfig();
+    try { return resolveConfig(JSON.parse(fs.readFileSync(configPath, 'utf8'))); }
+    catch (cause) { throw new Error('Configuration file ' + configPath + ': ' + cause.message, { cause }); }
+}
+
 export function run(args, { stdout = process.stdout, stderr = process.stderr } = {}) {
     try {
         const options = parseArguments(args);
         if (options.help) { stdout.write(USAGE); return 0; }
-        const configuration = options.configPath ? JSON.parse(fs.readFileSync(options.configPath, 'utf8')) : {};
-        const merged = mergeOverrides(resolveConfig(configuration), options.overrides);
+        const merged = mergeOverrides(readConfig(options.configPath), options.overrides);
         const sourcePath = fs.realpathSync(options.input);
         assert(fs.statSync(sourcePath).isFile(), 'Input must be a file');
         const paths = options.output ? validateOutputPath(sourcePath, options.output) : { input: sourcePath, output: null };

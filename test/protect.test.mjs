@@ -199,3 +199,15 @@ test('cleanup rejects malformed import manifests without modifying the input', (
         assert.deepEqual(source, before);
     }
 });
+
+test('UTF-8 import paths are recompressed and can be excluded by name', () => {
+    const korean = 'war3mapImported\\텍스처\\한글.blp', compressible = Buffer.alloc(8192, 67);
+    const source = createLuaMap({ extraEntries: [[korean, compressible]], mpq: { attributes: true } });
+    const index = openMap(source).inspect().blocks.findIndex(block => block.size === compressible.length);
+    const optimized = openMap(protectMap(source).bytes);
+    assert(optimized.inspect().blocks[index].packedSize < compressible.length);
+    assert.deepEqual(optimized.read(korean), compressible);
+    const excluded = openMap(protectMap(source, { compression: { excludeFiles: ['WAR3MAPIMPORTED/텍스처/한글.BLP'] } }).bytes);
+    assert.equal(excluded.inspect().blocks[index].packedSize, compressible.length);
+    assert.deepEqual(excluded.read(korean), compressible);
+});

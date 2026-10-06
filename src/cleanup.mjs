@@ -32,23 +32,23 @@ function validateReferences(ast, names) {
 
 function cleanImports(bytes, removedNames) {
     if (!bytes) return null;
-    assert(bytes.length >= 8 && bytes.readUInt32LE(0) === 1, 'Unsupported import manifest');
+    assert(bytes.length >= 8 && bytes.readUInt32LE(0) === 1, 'war3map.imp: Unsupported import manifest');
     const removed = new Set(removedNames.map(canonicalPath));
     const count = bytes.readUInt32LE(4), entries = [];
-    assert(count <= bytes.length - 8, 'Invalid import count');
+    assert(count <= bytes.length - 8, 'war3map.imp: Invalid import count');
     let cursor = 8;
     for (let index = 0; index < count; index++) {
         const start = cursor;
-        assert(cursor < bytes.length, 'Truncated import manifest');
+        assert(cursor < bytes.length, 'war3map.imp: Truncated import manifest at entry ' + index);
         const flag = bytes[cursor++], end = bytes.indexOf(0, cursor);
-        assert(IMPORT_FLAGS.has(flag), 'Unsupported import path flag: ' + flag);
-        assert(end >= cursor, 'Unterminated import path');
+        assert(IMPORT_FLAGS.has(flag), 'war3map.imp: Unsupported import path flag: ' + flag);
+        assert(end >= cursor, 'war3map.imp: Unterminated import path at entry ' + index);
         const rawName = bytes.toString('latin1', cursor, end);
         cursor = end + 1;
         const actual = CUSTOM_IMPORT_FLAGS.has(flag) ? rawName : 'war3mapImported\\' + rawName;
         if (!removed.has(canonicalPath(actual))) entries.push(bytes.subarray(start, cursor));
     }
-    assert(cursor === bytes.length, 'Trailing import data');
+    assert(cursor === bytes.length, 'war3map.imp: Trailing import data');
     if (entries.length === count) return bytes;
     const header = Buffer.from(bytes.subarray(0, 8));
     header.writeUInt32LE(entries.length, 4);

@@ -327,16 +327,18 @@ test('incompressible replacement is stored raw without a larger sector table', (
 test('malformed compressed sectors fail rather than silently falling back', () => {
     const broken = Buffer.alloc(12); broken.writeUInt32LE(8, 0); broken.writeUInt32LE(12, 4); broken.set([2, 255, 255, 255], 8);
     const source = createTestMap([['broken.bin', { data: broken, decoded: Buffer.alloc(32), flags: 0x80000200 }]]);
-    assert.throws(() => openMap(source).optimize());
-    assert.throws(() => openMap(source).replace([['broken.bin', Buffer.from('replacement')]]));
+    assert.throws(() => openMap(source).optimize(), /^Error: Corrupt zlib sector in broken\.bin: /);
+    assert.throws(() => openMap(source).replace([['broken.bin', Buffer.from('replacement')]]), /Corrupt zlib sector in broken\.bin/);
 });
 
 test('preservation verification detects unexpected changes to unknown payloads and metadata', () => {
     const source = createTestMap([['war3map.lua', Buffer.from('script')]], { records: [{ data: Buffer.from('unknown payload') }] });
     const changedPayload = mutateTestMap(source, ({ offset, blocks }, bytes) => bytes[offset + blocks.readUInt32LE(16)] ^= 1);
-    assert.throws(() => openMap(source).verifyPreserved(changedPayload), /packed payload/);
+    assert.throws(() => openMap(source).verifyPreserved(changedPayload), /^AssertionError.*: Unchanged MPQ packed payload changed: block 1$/);
+    const changedScript = mutateTestMap(source, ({ offset, blocks }, bytes) => bytes[offset + blocks.readUInt32LE(0)] ^= 1);
+    assert.throws(() => openMap(source).verifyPreserved(changedScript), /packed payload changed: block 0 \(war3map\.lua\)$/);
     const changedFlags = mutateTestMap(source, ({ blocks }) => blocks.writeUInt32LE(0x80000100, 28));
-    assert.throws(() => openMap(source).verifyPreserved(changedFlags), /block metadata/);
+    assert.throws(() => openMap(source).verifyPreserved(changedFlags), /block metadata changed: block 1$/);
 });
 
 test('signed maps, reserved removal targets and invalid compression options are rejected', () => {
@@ -356,4 +358,48 @@ test('automatic metadata updates cannot overwrite aliased listfile or attributes
     assert.throws(() => openMap(source).remove(['script.bin']), /Aliased/);
     const attributesAlias = createTestMap([['script.bin', Buffer.from('original')]], { attributes: true, aliases: [{ name: 'attrs-alias.bin', target: '(attributes)' }] });
     assert.throws(() => openMap(attributesAlias).replace([['script.bin', Buffer.from('changed')]]), /Aliased/);
+});
+
+test('UTF-8 entry names are hashed as Warcraft III bytes, listed and optimized', () => {
+    const korean = 'war3mapImported\\한글.blp', compressible = Buffer.alloc(4096, 65);
+    const source = createTestMap([[korean, compressible], ['ascii.bin', compressible]], { attributes: true });
+    const map = openMap(source);
+    assert(map.has(korean) && map.has('WAR3MAPIMPORTED/한글.BLP'));
+    assert.deepEqual(map.read(korean), compressible);
+    assert(map.listNames().includes(korean));
+    const result = map.optimize(), after = openMap(result);
+    assert(after.inspect().blocks[0].packedSize < compressible.length, 'UTF-8 named entries must be recompressed');
+    assert.deepEqual(after.read(korean), compressible);
+    assert(map.verifyPreserved(result, { changedNames: [korean, 'ascii.bin'] }));
+});
+
+test('listfile rows keep legacy bytes when assets are added and are never transcoded', () => {
+    const legacy = Buffer.from([0xc7, 0xd1, 0x2e, 0x62, 0x6c, 0x70]); // CP949 bytes, invalid UTF-8.
+    const list = Buffer.concat([Buffer.from('keep.bin\n'), legacy, Buffer.from('\r\n\r\n(listfile)')]);
+    const source = createTestMap([['keep.bin', Buffer.from('keep')], ['(listfile)', list]]);
+    assert.deepEqual(openMap(source).listNames(), ['keep.bin', '(listfile)'], 'Rows that are not UTF-8 are not guessed');
+    const added = 'new\\한글.bin', result = openMap(source).replace([[added, Buffer.from('asset')]]);
+    assert.deepEqual(openMap(result).read('(listfile)'), Buffer.concat([list, Buffer.from('\r\n' + added + '\r\n')]));
+    assert.deepEqual(openMap(result).replace([[added, Buffer.from('asset')]]), result, 'A listed addition is not appended again');
+});
+
+test('replacement around a pinned block at the archive end keeps it pinned and falls back to the appended layout', () => {
+    const fixture = createTestMap([['a.bin', Buffer.from('aaaa')], ['pin.bin', { data: Buffer.alloc(0), flags: 0x80030000 }]], { attributes: true });
+    const source = mutateTestMap(fixture, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(8), 16));
+    const map = openMap(source), pinned = map.inspect().blocks[1].offset;
+    for (const contents of [Buffer.from('changed contents'), Buffer.alloc(0)]) {
+        const result = map.replace([['a.bin', contents]]), after = openMap(result);
+        assert.deepEqual(after.read('a.bin'), contents);
+        assert.equal(after.inspect().blocks[1].offset, pinned, 'FIX_KEY blocks never move');
+        assert(map.verifyPreserved(result, { changedNames: ['a.bin'] }));
+        assert.deepEqual(after.replace([['a.bin', contents]]), result, 'Repeated replacement is a bytewise no-op');
+    }
+    // Without attributes an empty payload makes compaction no smaller than
+    // appending, so the original archive body stays in place before the tables.
+    const plain = mutateTestMap(createTestMap([['a.bin', Buffer.from('aaaa')], ['pin.bin', { data: Buffer.alloc(0), flags: 0x80030000 }]]),
+        ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(8), 16));
+    const appended = openMap(plain).replace([['a.bin', Buffer.alloc(0)]]), headerEnd = openMap(plain).inspect().archiveOffset + 32;
+    assert.deepEqual(appended.subarray(headerEnd, plain.length), plain.subarray(headerEnd));
+    assert.deepEqual(openMap(appended).read('a.bin'), Buffer.alloc(0));
+    assert(openMap(plain).verifyPreserved(appended, { changedNames: ['a.bin'] }));
 });

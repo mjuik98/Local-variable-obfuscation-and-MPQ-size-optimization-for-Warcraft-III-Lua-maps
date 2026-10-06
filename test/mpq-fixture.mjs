@@ -15,7 +15,8 @@ for (let low = 0; low < 256; low++) {
 }
 export function fixtureHash(name, type) {
     let a = 0x7fed7fed, b = 0xeeeeeeee;
-    for (const c of Buffer.from(name.replaceAll('/', '\\').toUpperCase(), 'ascii')) {
+    // Warcraft III hashes UTF-8 bytes and folds only ASCII letters and slashes.
+    for (const c of Buffer.from(name, 'utf8').map(byte => byte === 47 ? 92 : byte >= 97 && byte <= 122 ? byte - 32 : byte)) {
         a = (crypt[type * 256 + c] ^ (a + b)) >>> 0;
         b = (c + a + b + (b << 5) + 3) >>> 0;
     }
