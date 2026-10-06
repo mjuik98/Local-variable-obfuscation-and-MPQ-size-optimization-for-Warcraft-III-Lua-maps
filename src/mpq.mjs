@@ -5,28 +5,60 @@ import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 
-const crypt = new Uint32Array(1280);
+export const MPQ_SIGNATURE = Buffer.from([77, 80, 81, 26]); // "MPQ\x1a"
+const HEADER_SIZE = 32, ENTRY_SIZE = 16;
+// Byte offsets inside the MPQ v0 header and the decrypted table entries.
+const HEADER = { headerSize: 4, archiveSize: 8, formatVersion: 12, sectorShift: 14, hashPos: 16, blockPos: 20, hashCount: 24, blockCount: 28 };
+const HASH_ENTRY = { nameA: 0, nameB: 4, locale: 8, blockIndex: 12 };
+const BLOCK_ENTRY = { start: 0, packedSize: 4, size: 8, flags: 12 };
+const FILE_IMPLODE = 0x100, FILE_COMPRESS = 0x200, FILE_ENCRYPTED = 0x10000, FILE_FIX_KEY = 0x20000;
+const FILE_SINGLE_UNIT = 0x1000000, FILE_EXISTS = 0x80000000;
+const FIXED_ENCRYPTION = FILE_ENCRYPTED | FILE_FIX_KEY, COMPRESSED_FILE = (FILE_EXISTS | FILE_COMPRESS) >>> 0;
+// Hash slots whose block index is at least HASH_DELETED are free (deleted or never used).
+const HASH_DELETED = 0xfffffffe;
+const ZLIB_MASK = 2;
+// Hash types: probe start, name checks A/B and encryption key.
+const HASH_OFFSET = 0, HASH_A = 1, HASH_B = 2, HASH_KEY = 3;
+// (attributes) arrays in file order: [flag, bytes per block] for CRC32, FILETIME and MD5.
+const ATTRIBUTES_VERSION = 100, ATTRIBUTES_HEADER_SIZE = 8;
+const ATTRIBUTE_CRC32 = 1, ATTRIBUTE_MD5 = 4;
+const ATTRIBUTE_ARRAYS = [[ATTRIBUTE_CRC32, 4], [2, 8], [ATTRIBUTE_MD5, 16]];
+
 const mapStates = new WeakMap();
-const canonicalName = name => name.replaceAll('/', '\\').toUpperCase();
-let seed = 0x100001;
-for (let low = 0; low < 256; low++) {
-    for (let high = 0; high < 5; high++) {
-        seed = (seed * 125 + 3) % 0x2aaaab;
-        const first = (seed & 0xffff) << 16;
-        seed = (seed * 125 + 3) % 0x2aaaab;
-        crypt[high * 256 + low] = (first | (seed & 0xffff)) >>> 0;
+const crypt = new Uint32Array(1280);
+{
+    let seed = 0x100001;
+    for (let low = 0; low < 256; low++) {
+        for (let high = 0; high < 5; high++) {
+            seed = (seed * 125 + 3) % 0x2aaaab;
+            const first = (seed & 0xffff) << 16;
+            seed = (seed * 125 + 3) % 0x2aaaab;
+            crypt[high * 256 + low] = (first | (seed & 0xffff)) >>> 0;
+        }
     }
 }
+const crcTable = new Uint32Array(256);
+for (let byte = 0; byte < 256; byte++) {
+    let crc = byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    crcTable[byte] = crc >>> 0;
+}
+
+export const canonicalPath = name => name.replaceAll('/', '\\').toUpperCase();
+const validName = name => typeof name === 'string' && name.length > 0 && !/[\0\r\n]/.test(name);
+
 function hash(name, type) {
     let a = 0x7fed7fed, b = 0xeeeeeeee;
-    for (const c of Buffer.from(name.replaceAll('/', '\\').toUpperCase(), 'ascii')) {
+    for (const c of Buffer.from(canonicalPath(name), 'ascii')) {
         a = (crypt[type * 256 + c] ^ (a + b)) >>> 0;
         b = (c + a + b + (b << 5) + 3) >>> 0;
     }
     return a;
 }
+const HASH_TABLE_KEY = hash('(hash table)', HASH_KEY), BLOCK_TABLE_KEY = hash('(block table)', HASH_KEY);
+const slotKey = (a, b) => a + ':' + b;
 
-function transform(input, key, encrypt = false) {
+function transform(input, key, encrypt) {
     const bytes = Buffer.from(input);
     let state = 0xeeeeeeee;
     for (let i = 0; i + 4 <= bytes.length; i += 4) {
@@ -39,49 +71,99 @@ function transform(input, key, encrypt = false) {
     }
     return bytes;
 }
+const decrypt = (input, key) => transform(input, key, false);
+const encrypt = (input, key) => transform(input, key, true);
 
 export function crc32(bytes) {
     let crc = 0xffffffff;
-    for (const byte of bytes) {
-        crc ^= byte;
-        for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
-    }
+    for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
     return (crc ^ 0xffffffff) >>> 0;
+}
+
+function readBlock(table, index) {
+    const p = index * ENTRY_SIZE;
+    return { start: table.readUInt32LE(p + BLOCK_ENTRY.start), packedSize: table.readUInt32LE(p + BLOCK_ENTRY.packedSize),
+        size: table.readUInt32LE(p + BLOCK_ENTRY.size), flags: table.readUInt32LE(p + BLOCK_ENTRY.flags) };
+}
+const blockRow = (table, index) => table.subarray(index * ENTRY_SIZE, (index + 1) * ENTRY_SIZE);
+const slotBlockIndex = (table, p) => table.readUInt32LE(p + HASH_ENTRY.blockIndex);
+const isFixedKey = flags => (flags & FIXED_ENCRYPTION) === FIXED_ENCRYPTION;
+
+function attributesLayout(attributes) {
+    assert.equal(attributes.readUInt32LE(0), ATTRIBUTES_VERSION, 'Unsupported attributes version');
+    const flags = attributes.readUInt32LE(4);
+    assert.equal(flags & ~7, 0, 'Unsupported attribute flags');
+    const arrays = ATTRIBUTE_ARRAYS.filter(([flag]) => flags & flag);
+    return { flags, arrays, rowSize: arrays.reduce((sum, [, stride]) => sum + stride, 0) };
+}
+
+function compressionLevels(levels = [6, 9]) {
+    assert(Array.isArray(levels) && levels.length > 0 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'Invalid zlib compression levels');
+    return [...new Set(levels)];
+}
+
+// Listfiles may contain legacy byte encodings and mixed line ends. Compare
+// ASCII path bytes case-insensitively without transcoding unrelated rows.
+function listfileKey(input) {
+    const normalized = Buffer.from(input);
+    for (let i = 0; i < normalized.length; i++) {
+        if (normalized[i] === 47) normalized[i] = 92;
+        else if (normalized[i] >= 97 && normalized[i] <= 122) normalized[i] -= 32;
+    }
+    return normalized.toString('latin1');
 }
 
 export function openMap(input) {
     const bytes = Buffer.isBuffer(input) ? input : fs.readFileSync(input);
-    const offset = bytes.indexOf(Buffer.from([77, 80, 81, 26]));
+    const offset = bytes.indexOf(MPQ_SIGNATURE);
     assert(offset >= 0, 'MPQ header not found');
-    const header = bytes.subarray(offset, offset + 32);
-    assert.equal(header.length, 32, 'Truncated MPQ header');
-    assert.equal(header.readUInt16LE(12), 0, 'Only MPQ v0 archives are supported');
-    assert.equal(header.readUInt32LE(4), 32, 'Unsupported MPQ header size');
-    const archiveEnd = offset + header.readUInt32LE(8);
+    const header = bytes.subarray(offset, offset + HEADER_SIZE);
+    assert.equal(header.length, HEADER_SIZE, 'Truncated MPQ header');
+    assert.equal(header.readUInt16LE(HEADER.formatVersion), 0, 'Only MPQ v0 archives are supported');
+    assert.equal(header.readUInt32LE(HEADER.headerSize), HEADER_SIZE, 'Unsupported MPQ header size');
+    const archiveEnd = offset + header.readUInt32LE(HEADER.archiveSize);
     assert.equal(archiveEnd, bytes.length, 'Archive has a trailer/signature; refusing to modify it');
-    const sectorSize = 512 * 2 ** header.readUInt16LE(14);
-    const hashCount = header.readUInt32LE(24), blockCount = header.readUInt32LE(28);
-    function table(field, count, name) {
-        const start = offset + header.readUInt32LE(field);
-        assert(start >= offset + 32 && start + count * 16 <= archiveEnd, 'Invalid MPQ table');
-        return transform(bytes.subarray(start, start + count * 16), hash(name, 3));
+    const sectorSize = 512 * 2 ** header.readUInt16LE(HEADER.sectorShift);
+    const hashCount = header.readUInt32LE(HEADER.hashCount), blockCount = header.readUInt32LE(HEADER.blockCount);
+    const hashPos = header.readUInt32LE(HEADER.hashPos), blockPos = header.readUInt32LE(HEADER.blockPos);
+    function table(start, count, key) {
+        assert(start >= HEADER_SIZE && offset + start + count * ENTRY_SIZE <= archiveEnd, 'Invalid MPQ table');
+        return decrypt(bytes.subarray(offset + start, offset + start + count * ENTRY_SIZE), key);
     }
-    const hashTable = table(16, hashCount, '(hash table)');
-    const blockTable = table(20, blockCount, '(block table)');
+    const hashTable = table(hashPos, hashCount, HASH_TABLE_KEY);
+    const blockTable = table(blockPos, blockCount, BLOCK_TABLE_KEY);
+    const encryptedTables = (hashes, blocks) => [encrypt(hashes, HASH_TABLE_KEY), encrypt(blocks, BLOCK_TABLE_KEY)];
 
+    // The tables never change after opening, so derived lookups are built once.
+    // Every matching slot is indexed, not only the probe chain, so that locale
+    // variants and stray duplicates are always seen.
+    let slotIndex = null, referenceCounts = null, liveEntries = null;
     function matchingSlots(name) {
-        const a = hash(name, 1), b = hash(name, 2);
-        const matches = [];
-        for (let i = 0; i < hashCount; i++) {
-            const p = i * 16, index = hashTable.readUInt32LE(p + 12);
-            if (index < blockCount && hashTable.readUInt32LE(p) === a && hashTable.readUInt32LE(p + 4) === b) matches.push(p);
+        if (!slotIndex) {
+            slotIndex = new Map();
+            for (let p = 0; p < hashTable.length; p += ENTRY_SIZE) {
+                if (slotBlockIndex(hashTable, p) >= blockCount) continue;
+                const key = slotKey(hashTable.readUInt32LE(p + HASH_ENTRY.nameA), hashTable.readUInt32LE(p + HASH_ENTRY.nameB));
+                if (slotIndex.has(key)) slotIndex.get(key).push(p);
+                else slotIndex.set(key, [p]);
+            }
         }
-        return matches;
+        return slotIndex.get(slotKey(hash(name, HASH_A), hash(name, HASH_B))) ?? [];
+    }
+    function hashReferences() {
+        if (!referenceCounts) {
+            referenceCounts = new Uint32Array(blockCount);
+            for (let p = 0; p < hashTable.length; p += ENTRY_SIZE) {
+                const index = slotBlockIndex(hashTable, p);
+                if (index < blockCount) referenceCounts[index]++;
+            }
+        }
+        return referenceCounts;
     }
     function indexOf(name) {
         const matches = matchingSlots(name);
         assert(matches.length <= 1, 'Multiple locale entries require explicit handling: ' + name);
-        return matches.length ? hashTable.readUInt32LE(matches[0] + 12) : -1;
+        return matches.length ? slotBlockIndex(hashTable, matches[0]) : -1;
     }
     function has(name) {
         return matchingSlots(name).length > 0;
@@ -91,66 +173,63 @@ export function openMap(input) {
         if (!list) return [];
         const seen = new Set();
         return list.toString('utf8').split(/\r?\n/).filter(name => {
-            if (!name || seen.has(canonicalName(name)) || !has(name)) return false;
-            seen.add(canonicalName(name));
+            if (!name || seen.has(canonicalPath(name)) || !has(name)) return false;
+            seen.add(canonicalPath(name));
             return true;
         });
     }
     function inspect() {
-        const references = new Uint32Array(blockCount);
-        for (let i = 0; i < hashCount; i++) {
-            const index = hashTable.readUInt32LE(i * 16 + 12);
-            if (index < blockCount) references[index]++;
-        }
+        const references = hashReferences();
         return { formatVersion: 0, archiveOffset: offset, archiveSize: archiveEnd - offset,
             sectorSize, hashCount, blockCount, blocks: Array.from({ length: blockCount }, (_, index) => {
-                const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
-                return { index, offset: blockTable.readUInt32LE(p), packedSize: blockTable.readUInt32LE(p + 4),
-                    size: blockTable.readUInt32LE(p + 8), flags, live: Boolean(flags & 0x80000000), hashReferences: references[index] };
+                const { start, packedSize, size, flags } = readBlock(blockTable, index);
+                return { index, offset: start, packedSize, size, flags, live: Boolean(flags & FILE_EXISTS), hashReferences: references[index] };
             }) };
+    }
+    function assertIndependent(name) {
+        const index = indexOf(name);
+        if (index >= 0) assert.equal(hashReferences()[index], 1, 'Aliased entries cannot be replaced independently: ' + name);
     }
 
     function read(name, skipUnsupported = false) {
         const index = indexOf(name);
         if (index < 0) return null;
-        const p = index * 16, start = blockTable.readUInt32LE(p);
-        const packed = blockTable.readUInt32LE(p + 4), length = blockTable.readUInt32LE(p + 8);
-        const flags = blockTable.readUInt32LE(p + 12);
-        assert(flags & 0x80000000, 'Entry is not live: ' + name);
+        const { start, packedSize, size: length, flags } = readBlock(blockTable, index);
+        assert(flags & FILE_EXISTS, 'Entry is not live: ' + name);
         // Opaque input files remain replaceable even when we cannot decode them
         // for the optional identical-content comparison.
-        if (skipUnsupported && ((flags & (0x100 | 0x1000000)) ||
-            ((flags & 0x10000) && !(flags & 0x200)))) return null;
-        assert.equal(flags & 0x100, 0, 'PKWARE compression is unsupported: ' + name);
+        if (skipUnsupported && ((flags & (FILE_IMPLODE | FILE_SINGLE_UNIT)) ||
+            ((flags & FILE_ENCRYPTED) && !(flags & FILE_COMPRESS)))) return null;
+        assert.equal(flags & FILE_IMPLODE, 0, 'PKWARE compression is unsupported: ' + name);
         // Warcraft III ignores SINGLE_UNIT, unlike generic MPQ readers.
         // Accepting it here would let a self-readable but unplayable map pass validation.
-        assert.equal(flags & 0x1000000, 0, 'Warcraft III does not support single-unit MPQ entries: ' + name);
-        assert(offset + start + packed <= archiveEnd, 'Entry outside archive: ' + name);
-        const data = bytes.subarray(offset + start, offset + start + packed);
-        let key = hash(name.split(/[\\/]/).pop(), 3);
-        if (flags & 0x20000) key = ((key + start) ^ length) >>> 0;
+        assert.equal(flags & FILE_SINGLE_UNIT, 0, 'Warcraft III does not support single-unit MPQ entries: ' + name);
+        assert(offset + start + packedSize <= archiveEnd, 'Entry outside archive: ' + name);
+        const data = bytes.subarray(offset + start, offset + start + packedSize);
+        let key = hash(name.split(/[\\/]/).pop(), HASH_KEY);
+        if (flags & FILE_FIX_KEY) key = ((key + start) ^ length) >>> 0;
         function unpack(chunk, expected) {
             if (chunk.length === expected) return chunk;
-            assert(flags & 0x200, 'Uncompressed length mismatch: ' + name);
-            if (skipUnsupported && chunk[0] !== 2) return null;
-            assert.equal(chunk[0], 2, 'Unsupported compression mask: ' + name);
+            assert(flags & FILE_COMPRESS, 'Uncompressed length mismatch: ' + name);
+            if (skipUnsupported && chunk[0] !== ZLIB_MASK) return null;
+            assert.equal(chunk[0], ZLIB_MASK, 'Unsupported compression mask: ' + name);
             const result = zlib.inflateSync(chunk.subarray(1), { maxOutputLength: expected });
             assert.equal(result.length, expected);
             return result;
         }
-        if (!(flags & 0x200)) {
-            assert(!(flags & 0x10000), 'Encrypted raw sectors are unsupported');
-            assert.equal(packed, length);
+        if (!(flags & FILE_COMPRESS)) {
+            assert(!(flags & FILE_ENCRYPTED), 'Encrypted raw sectors are unsupported');
+            assert.equal(packedSize, length);
             return data;
         }
         const count = Math.ceil(length / sectorSize), tableSize = (count + 1) * 4;
-        const sectors = flags & 0x10000 ? transform(data.subarray(0, tableSize), (key - 1) >>> 0) : data.subarray(0, tableSize);
+        const sectors = flags & FILE_ENCRYPTED ? decrypt(data.subarray(0, tableSize), (key - 1) >>> 0) : data.subarray(0, tableSize);
         const chunks = [];
         for (let i = 0; i < count; i++) {
             const a = sectors.readUInt32LE(i * 4), b = sectors.readUInt32LE(i * 4 + 4);
             assert(a >= tableSize && b >= a && b <= data.length, 'Invalid sector offsets');
             let chunk = data.subarray(a, b);
-            if (flags & 0x10000) chunk = transform(chunk, (key + i) >>> 0);
+            if (flags & FILE_ENCRYPTED) chunk = decrypt(chunk, (key + i) >>> 0);
             const raw = unpack(chunk, Math.min(sectorSize, length - i * sectorSize));
             if (raw === null) return null;
             chunks.push(raw);
@@ -159,30 +238,26 @@ export function openMap(input) {
     }
 
     function validateArchive() {
+        if (liveEntries) return liveEntries;
         assert(!has('(signature)'), 'Signed maps are not supported');
         const live = [];
-        const ranges = [[0, 32],
-            [header.readUInt32LE(16), header.readUInt32LE(16) + hashTable.length],
-            [header.readUInt32LE(20), header.readUInt32LE(20) + blockTable.length]];
-        for (let i = 0; i < hashCount; i++) {
-            const index = hashTable.readUInt32LE(i * 16 + 12);
-            if (index >= 0xfffffffe) continue;
+        const ranges = [[0, HEADER_SIZE], [hashPos, hashPos + hashTable.length], [blockPos, blockPos + blockTable.length]];
+        for (let p = 0; p < hashTable.length; p += ENTRY_SIZE) {
+            const index = slotBlockIndex(hashTable, p);
+            if (index >= HASH_DELETED) continue;
             assert(index < blockCount, 'Invalid MPQ block reference');
-            assert(blockTable.readUInt32LE(index * 16 + 12) & 0x80000000, 'MPQ hash references an inactive block');
+            assert(readBlock(blockTable, index).flags & FILE_EXISTS, 'MPQ hash references an inactive block');
         }
         // Keep all live blocks, including files absent from (listfile), and retain
         // their indices so locale entries and attributes arrays remain aligned.
         for (let index = 0; index < blockCount; index++) {
-            const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
-            if (!(flags & 0x80000000)) continue;
-            const start = blockTable.readUInt32LE(p), size = blockTable.readUInt32LE(p + 4);
-            assert(start >= 32 && offset + start + size <= archiveEnd, 'Invalid live MPQ payload range');
-            const entry = { index, start, size, fixed: (flags & 0x30000) === 0x30000,
-                data: bytes.subarray(offset + start, offset + start + size) };
-            live.push(entry);
-            if (size) ranges.push([start, start + size]);
+            const { start, packedSize: size, flags } = readBlock(blockTable, index);
+            if (!(flags & FILE_EXISTS)) continue;
+            assert(start >= HEADER_SIZE && offset + start + size <= archiveEnd, 'Invalid live MPQ payload range');
             // FIX_KEY encryption includes the original MPQ-relative offset.
             // Pin these bytes instead of guessing names or changing encryption.
+            live.push({ index, start, size, fixed: isFixedKey(flags), data: bytes.subarray(offset + start, offset + start + size) });
+            if (size) ranges.push([start, start + size]);
         }
         ranges.sort((a, b) => a[0] - b[0]);
         let end = 0;
@@ -191,20 +266,20 @@ export function openMap(input) {
             assert(start >= end, 'Overlapping MPQ payloads or tables; refusing to compact');
             end = stop;
         }
+        liveEntries = live;
         return live;
     }
     function compact() {
-        const live = validateArchive(), pinned = live.filter(entry => entry.fixed);
-        pinned.sort((a, b) => a.start - b.start);
+        const live = validateArchive(), pinned = live.filter(entry => entry.fixed).sort((a, b) => a.start - b.start);
         const free = [];
-        let cursor = 32;
+        let cursor = HEADER_SIZE;
         for (const entry of pinned) {
             if (entry.start > cursor) free.push({ start: cursor, end: entry.start });
             cursor = Math.max(cursor, entry.start + entry.size);
         }
         free.push({ start: cursor, end: Infinity });
         const blocks = Buffer.from(blockTable);
-        let payloadEnd = 32;
+        let payloadEnd = HEADER_SIZE;
         for (const entry of live) {
             let start = entry.start;
             if (!entry.fixed) {
@@ -214,7 +289,7 @@ export function openMap(input) {
                 start = gap.start;
                 gap.start += entry.size;
             }
-            blocks.writeUInt32LE(start, entry.index * 16);
+            blocks.writeUInt32LE(start, entry.index * ENTRY_SIZE + BLOCK_ENTRY.start);
             payloadEnd = Math.max(payloadEnd, start + entry.size);
         }
         const hashOffset = payloadEnd, blockOffset = hashOffset + hashTable.length;
@@ -223,28 +298,28 @@ export function openMap(input) {
         // just to rearrange it, and make an already compact archive a bytewise no-op.
         if (offset + size >= bytes.length) return Buffer.from(bytes);
         const result = Buffer.alloc(offset + size);
-        bytes.copy(result, 0, 0, offset + 32);
-        for (const entry of live) entry.data.copy(result, offset + blocks.readUInt32LE(entry.index * 16));
-        transform(hashTable, hash('(hash table)', 3), true).copy(result, offset + hashOffset);
-        transform(blocks, hash('(block table)', 3), true).copy(result, offset + blockOffset);
-        result.writeUInt32LE(size, offset + 8);
-        result.writeUInt32LE(hashOffset, offset + 16);
-        result.writeUInt32LE(blockOffset, offset + 20);
+        bytes.copy(result, 0, 0, offset + HEADER_SIZE);
+        for (const entry of live) entry.data.copy(result, offset + readBlock(blocks, entry.index).start);
+        const [hashes, encryptedBlocks] = encryptedTables(hashTable, blocks);
+        hashes.copy(result, offset + hashOffset);
+        encryptedBlocks.copy(result, offset + blockOffset);
+        result.writeUInt32LE(size, offset + HEADER.archiveSize);
+        result.writeUInt32LE(hashOffset, offset + HEADER.hashPos);
+        result.writeUInt32LE(blockOffset, offset + HEADER.blockPos);
         openMap(result); // Recheck archive/table boundaries after serialization.
         assert.deepEqual(result.subarray(0, offset), bytes.subarray(0, offset), 'MPQ prefix preservation');
-        assert.deepEqual(transform(result.subarray(offset + hashOffset, offset + blockOffset), hash('(hash table)', 3)), hashTable, 'MPQ hash/locale preservation');
-        const verifiedBlocks = transform(result.subarray(offset + blockOffset), hash('(block table)', 3));
+        assert.deepEqual(decrypt(result.subarray(offset + hashOffset, offset + blockOffset), HASH_TABLE_KEY), hashTable, 'MPQ hash/locale preservation');
+        const verifiedBlocks = decrypt(result.subarray(offset + blockOffset), BLOCK_TABLE_KEY);
         for (let index = 0; index < blockCount; index++) {
-            const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
-            assert.deepEqual(verifiedBlocks.subarray(p + 4, p + 16), blockTable.subarray(p + 4, p + 16), 'MPQ block metadata preservation');
-            const oldStart = blockTable.readUInt32LE(p), newStart = verifiedBlocks.readUInt32LE(p);
-            if (!(flags & 0x80000000) || (flags & 0x30000) === 0x30000) {
+            const p = index * ENTRY_SIZE, { start: oldStart, packedSize, flags } = readBlock(blockTable, index);
+            assert.deepEqual(verifiedBlocks.subarray(p + 4, p + ENTRY_SIZE), blockTable.subarray(p + 4, p + ENTRY_SIZE), 'MPQ block metadata preservation');
+            const newStart = readBlock(verifiedBlocks, index).start;
+            if (!(flags & FILE_EXISTS) || isFixedKey(flags)) {
                 assert.equal(newStart, oldStart, 'MPQ fixed/inactive block preservation');
             }
-            if (flags & 0x80000000) {
-                const packed = blockTable.readUInt32LE(p + 4);
-                assert.deepEqual(result.subarray(offset + newStart, offset + newStart + packed),
-                    bytes.subarray(offset + oldStart, offset + oldStart + packed), 'MPQ packed payload preservation');
+            if (flags & FILE_EXISTS) {
+                assert.deepEqual(result.subarray(offset + newStart, offset + newStart + packedSize),
+                    bytes.subarray(offset + oldStart, offset + oldStart + packedSize), 'MPQ packed payload preservation');
             }
         }
         return result;
@@ -259,7 +334,7 @@ export function openMap(input) {
             const raw = contents.subarray(i * sectorSize, (i + 1) * sectorSize);
             let best = raw;
             for (const level of levels) {
-                const candidate = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw, { level })]);
+                const candidate = Buffer.concat([Buffer.from([ZLIB_MASK]), zlib.deflateSync(raw, { level })]);
                 if (candidate.length < best.length) best = candidate;
             }
             chunks.push(best);
@@ -267,34 +342,44 @@ export function openMap(input) {
         }
         sectors.writeUInt32LE(cursor, count * 4);
         const compressed = Buffer.concat(chunks);
-        return compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
+        return compressed.length < contents.length ? { data: compressed, flags: COMPRESSED_FILE } : { data: contents, flags: FILE_EXISTS };
     }
-    function compressionLevels(levels = [6, 9]) {
-        assert(Array.isArray(levels) && levels.length > 0 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'Invalid zlib compression levels');
-        return [...new Set(levels)];
+    function updateAttributes(attributes, changes, indices, nextBlock) {
+        const { arrays, rowSize } = attributesLayout(attributes);
+        assert.equal(attributes.length, ATTRIBUTES_HEADER_SIZE + blockCount * rowSize, 'Unexpected attributes size');
+        const updated = Buffer.alloc(ATTRIBUTES_HEADER_SIZE + nextBlock * rowSize), arrayStarts = new Map();
+        attributes.copy(updated, 0, 0, ATTRIBUTES_HEADER_SIZE);
+        let oldStart = ATTRIBUTES_HEADER_SIZE, newStart = ATTRIBUTES_HEADER_SIZE;
+        for (const [flag, stride] of arrays) {
+            attributes.copy(updated, newStart, oldStart, oldStart + blockCount * stride);
+            arrayStarts.set(flag, newStart);
+            oldStart += blockCount * stride;
+            newStart += nextBlock * stride;
+        }
+        for (const [name, contents] of changes) {
+            const index = indices.get(name);
+            if (arrayStarts.has(ATTRIBUTE_CRC32)) updated.writeUInt32LE(crc32(contents), arrayStarts.get(ATTRIBUTE_CRC32) + index * 4);
+            // Preserve timestamps; builds are deterministic for the same inputs.
+            if (arrayStarts.has(ATTRIBUTE_MD5)) createHash('md5').update(contents).digest().copy(updated, arrayStarts.get(ATTRIBUTE_MD5) + index * 16);
+        }
+        return updated;
     }
     function replace(entries, options = {}) {
         validateArchive();
-        const levels = compressionLevels(options.levels), encoded = new Map(), metadata = inspect();
+        const levels = compressionLevels(options.levels), encoded = new Map();
         const requested = [...entries];
-        assert(requested.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && entry[0].length > 0 && !/[\0\r\n]/.test(entry[0])), 'Invalid MPQ replacement entries');
-        assert.equal(new Set(requested.map(([name]) => canonicalName(name))).size, requested.length, 'Duplicate MPQ paths');
-        const changes = new Map(requested.map(([name, contents]) => [canonicalName(name) === '(LISTFILE)' ? '(listfile)' : name, contents]));
-        assert(![...changes.keys()].some(name => canonicalName(name) === '(ATTRIBUTES)'), 'Attributes are updated automatically');
-        assert(![...changes.keys()].some(name => canonicalName(name) === '(SIGNATURE)'), 'Signed maps are not supported');
-        const canonical = canonicalName;
-        assert.equal(new Set([...changes.keys()].map(canonical)).size, changes.size, 'Duplicate MPQ paths');
+        assert(requested.every(entry => Array.isArray(entry) && entry.length === 2 && validName(entry[0])), 'Invalid MPQ replacement entries');
+        assert.equal(new Set(requested.map(([name]) => canonicalPath(name))).size, requested.length, 'Duplicate MPQ paths');
+        const changes = new Map(requested.map(([name, contents]) => [canonicalPath(name) === '(LISTFILE)' ? '(listfile)' : name, contents]));
+        assert(![...changes.keys()].some(name => canonicalPath(name) === '(ATTRIBUTES)'), 'Attributes are updated automatically');
+        assert(![...changes.keys()].some(name => canonicalPath(name) === '(SIGNATURE)'), 'Signed maps are not supported');
         for (const [name, contents] of changes) {
-            assert(name.length > 0 && !/[\0\r\n]/.test(name), 'Invalid MPQ entry name');
             assert(Buffer.isBuffer(contents), 'Replacement contents must be a Buffer');
             const index = indexOf(name), identical = read(name, true)?.equals(contents);
             if (identical && !options.recompress) { changes.delete(name); continue; }
             const candidate = encode(contents, levels);
-            if (identical && candidate.data.length >= blockTable.readUInt32LE(index * 16 + 4)) { changes.delete(name); continue; }
-            if (index >= 0) {
-                const references = metadata.blocks[index].hashReferences;
-                assert.equal(references, 1, 'Aliased entries cannot be replaced independently: ' + name);
-            }
+            if (identical && candidate.data.length >= readBlock(blockTable, index).packedSize) { changes.delete(name); continue; }
+            assertIndependent(name);
             encoded.set(name, candidate);
         }
         if (!changes.size) return compact();
@@ -303,9 +388,9 @@ export function openMap(input) {
             const list = changes.get('(listfile)') ?? read('(listfile)');
             assert(list, 'Adding assets requires an existing MPQ listfile');
             const names = list.toString('utf8').split(/\r?\n/).filter(Boolean);
-            const known = new Set(names.map(canonical));
+            const known = new Set(names.map(canonicalPath));
             for (const name of additions) {
-                if (!known.has(canonical(name))) { names.push(name); known.add(canonical(name)); }
+                if (!known.has(canonicalPath(name))) { names.push(name); known.add(canonicalPath(name)); }
             }
             const updated = Buffer.from(names.join('\r\n') + '\r\n');
             if (!read('(listfile)')?.equals(updated)) {
@@ -320,83 +405,55 @@ export function openMap(input) {
             if (index < 0) {
                 let slot = -1;
                 for (let step = 0; step < hashCount; step++) {
-                    const p = ((hash(name, 0) + step) % hashCount) * 16;
-                    if (hashes.readUInt32LE(p + 12) >= 0xfffffffe) { slot = p; break; }
+                    const p = ((hash(name, HASH_OFFSET) + step) % hashCount) * ENTRY_SIZE;
+                    if (slotBlockIndex(hashes, p) >= HASH_DELETED) { slot = p; break; }
                 }
                 assert(slot >= 0, 'MPQ hash table is full; cannot add ' + name);
                 index = nextBlock++;
-                hashes.writeUInt32LE(hash(name, 1), slot);
-                hashes.writeUInt32LE(hash(name, 2), slot + 4);
-                hashes.writeUInt32LE(0, slot + 8); // Neutral locale/platform.
-                hashes.writeUInt32LE(index, slot + 12);
+                hashes.writeUInt32LE(hash(name, HASH_A), slot + HASH_ENTRY.nameA);
+                hashes.writeUInt32LE(hash(name, HASH_B), slot + HASH_ENTRY.nameB);
+                hashes.writeUInt32LE(0, slot + HASH_ENTRY.locale); // Neutral locale/platform.
+                hashes.writeUInt32LE(index, slot + HASH_ENTRY.blockIndex);
             }
             indices.set(name, index);
         }
         const attributes = read('(attributes)');
         if (attributes) {
-            assert.equal(attributes.readUInt32LE(0), 100, 'Unsupported attributes version');
-            const flags = attributes.readUInt32LE(4);
-            assert.equal(flags & ~7, 0, 'Unsupported attribute flags');
-            const expected = 8 + blockCount * ((flags & 1 ? 4 : 0) + (flags & 2 ? 8 : 0) + (flags & 4 ? 16 : 0));
-            assert.equal(attributes.length, expected, 'Unexpected attributes size');
-            const updated = Buffer.alloc(8 + nextBlock * ((flags & 1 ? 4 : 0) + (flags & 2 ? 8 : 0) + (flags & 4 ? 16 : 0)));
-            attributes.copy(updated, 0, 0, 8);
-            let oldStart = 8, newStart = 8;
-            for (const [flag, stride] of [[1, 4], [2, 8], [4, 16]]) {
-                if (!(flags & flag)) continue;
-                attributes.copy(updated, newStart, oldStart, oldStart + blockCount * stride);
-                oldStart += blockCount * stride;
-                newStart += nextBlock * stride;
-            }
-            for (const [name, contents] of changes) {
-                const index = indices.get(name);
-                if (flags & 1) updated.writeUInt32LE(crc32(contents), 8 + index * 4);
-                // Preserve timestamps; builds are deterministic for the same inputs.
-                if (flags & 4) {
-                    const start = 8 + nextBlock * ((flags & 1 ? 4 : 0) + (flags & 2 ? 8 : 0));
-                    createHash('md5').update(contents).digest().copy(updated, start + index * 16);
-                }
-            }
+            const updated = updateAttributes(attributes, changes, indices, nextBlock);
             if (!updated.equals(attributes)) {
                 changes.set('(attributes)', updated);
                 indices.set('(attributes)', indexOf('(attributes)'));
             }
         }
-        for (const name of changes.keys()) {
-            const index = indexOf(name);
-            if (index >= 0) assert.equal(metadata.blocks[index].hashReferences, 1, 'Aliased entries cannot be replaced independently: ' + name);
-        }
-        const blocks = Buffer.alloc(nextBlock * 16), chunks = [Buffer.from(bytes)];
+        for (const name of changes.keys()) assertIndependent(name);
+        const blocks = Buffer.alloc(nextBlock * ENTRY_SIZE), chunks = [Buffer.from(bytes)];
         blockTable.copy(blocks);
         let cursor = bytes.length;
         for (const [name, contents] of changes) {
             // Warcraft requires sector tables; single-unit compressed entries are never emitted.
             const { data, flags } = encoded.get(name) ?? encode(contents, levels);
-            const p = indices.get(name) * 16;
-            blocks.writeUInt32LE(cursor - offset, p);
-            blocks.writeUInt32LE(data.length, p + 4);
-            blocks.writeUInt32LE(contents.length, p + 8);
-            blocks.writeUInt32LE(flags, p + 12);
+            const p = indices.get(name) * ENTRY_SIZE;
+            blocks.writeUInt32LE(cursor - offset, p + BLOCK_ENTRY.start);
+            blocks.writeUInt32LE(data.length, p + BLOCK_ENTRY.packedSize);
+            blocks.writeUInt32LE(contents.length, p + BLOCK_ENTRY.size);
+            blocks.writeUInt32LE(flags, p + BLOCK_ENTRY.flags);
             chunks.push(data);
             cursor += data.length;
         }
-        const hashOffset = cursor - offset;
-        chunks.push(transform(hashes, hash('(hash table)', 3), true));
-        cursor += hashes.length;
-        const blockOffset = cursor - offset;
-        chunks.push(transform(blocks, hash('(block table)', 3), true));
-        cursor += blocks.length;
+        const hashOffset = cursor - offset, blockOffset = hashOffset + hashes.length;
+        chunks.push(...encryptedTables(hashes, blocks));
+        cursor += hashes.length + blocks.length;
         assert(cursor - offset <= 0xffffffff, 'MPQ v0 size limit exceeded');
         const result = Buffer.concat(chunks);
-        result.writeUInt32LE(cursor - offset, offset + 8);
-        result.writeUInt32LE(hashOffset, offset + 16);
-        result.writeUInt32LE(blockOffset, offset + 20);
-        result.writeUInt32LE(nextBlock, offset + 28);
+        result.writeUInt32LE(cursor - offset, offset + HEADER.archiveSize);
+        result.writeUInt32LE(hashOffset, offset + HEADER.hashPos);
+        result.writeUInt32LE(blockOffset, offset + HEADER.blockPos);
+        result.writeUInt32LE(nextBlock, offset + HEADER.blockCount);
         const verified = openMap(result);
         for (const [name, contents] of changes) assert.deepEqual(verified.read(name), contents, 'MPQ readback mismatch: ' + name);
-        for (let i = 0; i < blockCount; i++) {
-            if ([...changes.keys()].some(name => indexOf(name) === i)) continue;
-            assert.deepEqual(blocks.subarray(i * 16, i * 16 + 16), blockTable.subarray(i * 16, i * 16 + 16));
+        const changedIndices = new Set([...changes.keys()].map(indexOf));
+        for (let index = 0; index < blockCount; index++) {
+            if (!changedIndices.has(index)) assert.deepEqual(blockRow(blocks, index), blockRow(blockTable, index));
         }
         const resultBytes = verified.compact();
         verifyPreserved(resultBytes, { changedNames: [...changes.keys()] });
@@ -404,57 +461,48 @@ export function openMap(input) {
     }
     function remove(names) {
         validateArchive();
-        assert(Array.isArray(names) && names.every(name => typeof name === 'string' && name.length > 0 && !/[\0\r\n]/.test(name)), 'Invalid MPQ removal names');
-        const requested = [...new Map(names.map(name => [canonicalName(name), name])).values()];
-        assert(!requested.some(name => ['(ATTRIBUTES)', '(SIGNATURE)'].includes(canonicalName(name))), 'Cannot remove MPQ attributes or signatures');
+        assert(Array.isArray(names) && names.every(validName), 'Invalid MPQ removal names');
+        const requested = [...new Map(names.map(name => [canonicalPath(name), name])).values()];
+        assert(!requested.some(name => ['(ATTRIBUTES)', '(SIGNATURE)'].includes(canonicalPath(name))), 'Cannot remove MPQ attributes or signatures');
         const hashes = Buffer.from(hashTable), blocks = Buffer.from(blockTable), removed = new Set();
         for (const name of requested) {
             for (const p of matchingSlots(name)) {
-                removed.add(hashTable.readUInt32LE(p + 12));
-                hashes.writeUInt32LE(0xfffffffe, p + 12);
+                removed.add(slotBlockIndex(hashTable, p));
+                hashes.writeUInt32LE(HASH_DELETED, p + HASH_ENTRY.blockIndex);
             }
         }
         if (!removed.size) return compact();
         const referenced = new Set();
-        for (let p = 0; p < hashes.length; p += 16) {
-            const index = hashes.readUInt32LE(p + 12);
+        for (let p = 0; p < hashes.length; p += ENTRY_SIZE) {
+            const index = slotBlockIndex(hashes, p);
             if (index < blockCount) referenced.add(index);
         }
         // Only blocks that lost their last named reference are deactivated.
         // Original orphan blocks and aliases still referenced by other names survive.
         for (const index of removed) {
-            if (!referenced.has(index)) blocks.writeUInt32LE((blocks.readUInt32LE(index * 16 + 12) & ~0x80000000) >>> 0, index * 16 + 12);
+            const p = index * ENTRY_SIZE + BLOCK_ENTRY.flags;
+            if (!referenced.has(index)) blocks.writeUInt32LE((blocks.readUInt32LE(p) & ~FILE_EXISTS) >>> 0, p);
         }
         // Table sizes are unchanged, so editing their existing positions avoids
         // growing archives whose fixed-key payloads prevent useful compaction.
-        const result = Buffer.from(bytes);
-        transform(hashes, hash('(hash table)', 3), true).copy(result, offset + header.readUInt32LE(16));
-        transform(blocks, hash('(block table)', 3), true).copy(result, offset + header.readUInt32LE(20));
+        const result = Buffer.from(bytes), [encryptedHashes, encryptedBlocks] = encryptedTables(hashes, blocks);
+        encryptedHashes.copy(result, offset + hashPos);
+        encryptedBlocks.copy(result, offset + blockPos);
         let output = openMap(result).compact();
-        const deleted = new Set(requested.map(canonicalName));
+        const deleted = new Set(requested.map(canonicalPath));
         const list = deleted.has('(LISTFILE)') ? null : read('(listfile)');
         const changedNames = [];
         if (list) {
-            // Listfiles may contain legacy byte encodings and mixed line ends.
-            // Compare ASCII path bytes without transcoding unrelated rows.
-            const pathBytes = input => {
-                const normalized = Buffer.from(input);
-                for (let i = 0; i < normalized.length; i++) {
-                    if (normalized[i] === 47) normalized[i] = 92;
-                    else if (normalized[i] >= 97 && normalized[i] <= 122) normalized[i] -= 32;
-                }
-                return normalized.toString('latin1');
-            };
-            const deletedRows = new Set(requested.map(name => pathBytes(Buffer.from(name))));
+            const deletedRows = new Set(requested.map(name => listfileKey(Buffer.from(name))));
             const retained = [];
             let start = 0;
             for (let end = 0; end < list.length; end++) {
                 if (list[end] !== 10) continue;
                 const nameEnd = end > start && list[end - 1] === 13 ? end - 1 : end;
-                if (!deletedRows.has(pathBytes(list.subarray(start, nameEnd)))) retained.push(list.subarray(start, end + 1));
+                if (!deletedRows.has(listfileKey(list.subarray(start, nameEnd)))) retained.push(list.subarray(start, end + 1));
                 start = end + 1;
             }
-            if (start < list.length && !deletedRows.has(pathBytes(list.subarray(start)))) retained.push(list.subarray(start));
+            if (start < list.length && !deletedRows.has(listfileKey(list.subarray(start)))) retained.push(list.subarray(start));
             const updated = Buffer.concat(retained);
             if (!updated.equals(list)) {
                 output = openMap(output).replace([['(listfile)', updated]]);
@@ -462,22 +510,23 @@ export function openMap(input) {
             }
         }
         verifyPreserved(output, { changedNames, removedNames: requested });
-        for (const name of requested) assert(!openMap(output).has(name), 'Removed MPQ path is still present: ' + name);
+        const outputMap = openMap(output);
+        for (const name of requested) assert(!outputMap.has(name), 'Removed MPQ path is still present: ' + name);
         return output;
     }
     function optimize(options = {}) {
         validateArchive();
-        const levels = compressionLevels(options.levels), replacements = new Map(), metadata = inspect();
+        const levels = compressionLevels(options.levels), replacements = new Map(), references = hashReferences();
         const names = options.names ?? listNames();
         assert(Array.isArray(names) && names.every(name => typeof name === 'string'), 'Invalid MPQ optimization names');
         const seen = new Set();
         for (const name of names) {
-            if (seen.has(canonicalName(name))) continue;
-            seen.add(canonicalName(name));
+            if (seen.has(canonicalPath(name))) continue;
+            seen.add(canonicalPath(name));
             const matches = matchingSlots(name);
-            if (matches.length !== 1 || ['(ATTRIBUTES)', '(SIGNATURE)'].includes(canonicalName(name))) continue;
-            const index = hashTable.readUInt32LE(matches[0] + 12), entry = metadata.blocks[index];
-            if (entry.hashReferences !== 1 || ![0x80000000, 0x80000200].includes(entry.flags)) continue;
+            if (matches.length !== 1 || ['(ATTRIBUTES)', '(SIGNATURE)'].includes(canonicalPath(name))) continue;
+            const index = slotBlockIndex(hashTable, matches[0]), { flags } = readBlock(blockTable, index);
+            if (references[index] !== 1 || ![FILE_EXISTS, COMPRESSED_FILE].includes(flags)) continue;
             const contents = read(name, true);
             if (contents) replacements.set(name, contents);
         }
@@ -496,52 +545,49 @@ export function openMap(input) {
         assert(other.blockCount >= blockCount, 'MPQ block indices were removed');
         assert.equal(other.sectorSize, sectorSize, 'MPQ sector size changed');
         const changedIndices = new Set(), removedSlots = new Set(), removedIndices = new Set();
-        for (const name of changedNames) for (const p of matchingSlots(name)) changedIndices.add(hashTable.readUInt32LE(p + 12));
+        for (const name of changedNames) for (const p of matchingSlots(name)) changedIndices.add(slotBlockIndex(hashTable, p));
         for (const name of removedNames) for (const p of matchingSlots(name)) {
             removedSlots.add(p);
-            removedIndices.add(hashTable.readUInt32LE(p + 12));
+            removedIndices.add(slotBlockIndex(hashTable, p));
         }
+        const changedKeys = new Set(changedNames.map(name => slotKey(hash(name, HASH_A), hash(name, HASH_B))));
         const remaining = new Set();
-        for (let p = 0; p < other.hashTable.length; p += 16) {
-            const index = other.hashTable.readUInt32LE(p + 12);
+        for (let p = 0; p < other.hashTable.length; p += ENTRY_SIZE) {
+            const index = slotBlockIndex(other.hashTable, p);
             if (index < other.blockCount) remaining.add(index);
             if (removedSlots.has(p)) {
-                assert.equal(index, 0xfffffffe, 'Removed MPQ hash must be a tombstone');
-                assert.deepEqual(other.hashTable.subarray(p, p + 12), hashTable.subarray(p, p + 12), 'Removed MPQ locale metadata changed');
-            } else if (hashTable.readUInt32LE(p + 12) >= 0xfffffffe && index < other.blockCount) {
-                assert(changedNames.some(name => other.hashTable.readUInt32LE(p) === hash(name, 1) && other.hashTable.readUInt32LE(p + 4) === hash(name, 2)), 'Unexpected MPQ hash addition');
-            } else assert.deepEqual(other.hashTable.subarray(p, p + 16), hashTable.subarray(p, p + 16), 'Unchanged MPQ hash/locale slot changed');
+                assert.equal(index, HASH_DELETED, 'Removed MPQ hash must be a tombstone');
+                assert.deepEqual(other.hashTable.subarray(p, p + HASH_ENTRY.blockIndex), hashTable.subarray(p, p + HASH_ENTRY.blockIndex), 'Removed MPQ locale metadata changed');
+            } else if (slotBlockIndex(hashTable, p) >= HASH_DELETED && index < other.blockCount) {
+                assert(changedKeys.has(slotKey(other.hashTable.readUInt32LE(p + HASH_ENTRY.nameA), other.hashTable.readUInt32LE(p + HASH_ENTRY.nameB))), 'Unexpected MPQ hash addition');
+            } else assert.deepEqual(other.hashTable.subarray(p, p + ENTRY_SIZE), hashTable.subarray(p, p + ENTRY_SIZE), 'Unchanged MPQ hash/locale slot changed');
         }
         const attributesIndex = indexOf('(attributes)');
         if (attributesIndex >= 0) changedIndices.add(attributesIndex);
         for (let index = 0; index < blockCount; index++) {
-            const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
+            const p = index * ENTRY_SIZE, { start, packedSize, flags } = readBlock(blockTable, index);
             if (removedIndices.has(index) && !remaining.has(index)) {
                 // A preceding replacement/compaction may have moved the payload
                 // before deletion. Inactive offsets have no execution meaning.
                 assert.deepEqual(other.blockTable.subarray(p + 4, p + 12), blockTable.subarray(p + 4, p + 12), 'Removed MPQ block size metadata changed');
-                assert.equal(other.blockTable.readUInt32LE(p + 12), (flags & ~0x80000000) >>> 0, 'Removed MPQ block remains active');
+                assert.equal(readBlock(other.blockTable, index).flags, (flags & ~FILE_EXISTS) >>> 0, 'Removed MPQ block remains active');
                 continue;
             }
             if (changedIndices.has(index)) continue;
-            assert.deepEqual(other.blockTable.subarray(p + 4, p + 16), blockTable.subarray(p + 4, p + 16), 'Unchanged MPQ block metadata changed');
-            const start = blockTable.readUInt32LE(p), nextStart = other.blockTable.readUInt32LE(p);
-            if (!(flags & 0x80000000) || (flags & 0x30000) === 0x30000) assert.equal(nextStart, start, 'Pinned/inactive MPQ block offset changed');
-            if (flags & 0x80000000) {
-                const size = blockTable.readUInt32LE(p + 4);
-                assert.deepEqual(other.bytes.subarray(offset + nextStart, offset + nextStart + size), bytes.subarray(offset + start, offset + start + size), 'Unchanged MPQ packed payload changed');
+            assert.deepEqual(other.blockTable.subarray(p + 4, p + ENTRY_SIZE), blockTable.subarray(p + 4, p + ENTRY_SIZE), 'Unchanged MPQ block metadata changed');
+            const nextStart = readBlock(other.blockTable, index).start;
+            if (!(flags & FILE_EXISTS) || isFixedKey(flags)) assert.equal(nextStart, start, 'Pinned/inactive MPQ block offset changed');
+            if (flags & FILE_EXISTS) {
+                assert.deepEqual(other.bytes.subarray(offset + nextStart, offset + nextStart + packedSize), bytes.subarray(offset + start, offset + start + packedSize), 'Unchanged MPQ packed payload changed');
             }
         }
         if (attributesIndex >= 0) {
             const before = read('(attributes)'), after = otherMap.read('(attributes)');
             assert(after, 'MPQ attributes were removed');
-            assert.equal(before.readUInt32LE(0), 100, 'Unsupported attributes version');
-            const flags = before.readUInt32LE(4);
-            assert.equal(flags & ~7, 0, 'Unsupported attribute flags');
-            assert.deepEqual(after.subarray(0, 8), before.subarray(0, 8), 'MPQ attributes header changed');
-            let oldStart = 8, newStart = 8;
-            for (const [flag, stride] of [[1, 4], [2, 8], [4, 16]]) {
-                if (!(flags & flag)) continue;
+            const { arrays } = attributesLayout(before);
+            assert.deepEqual(after.subarray(0, ATTRIBUTES_HEADER_SIZE), before.subarray(0, ATTRIBUTES_HEADER_SIZE), 'MPQ attributes header changed');
+            let oldStart = ATTRIBUTES_HEADER_SIZE, newStart = ATTRIBUTES_HEADER_SIZE;
+            for (const [flag, stride] of arrays) {
                 for (let index = 0; index < blockCount; index++) {
                     // Timestamps and deleted slots retain their values; checksum updates
                     // are allowed only for explicitly changed content blocks.
@@ -559,192 +605,4 @@ export function openMap(input) {
     const api = { read, replace, compact, has, listNames, inspect, remove, optimize, verifyPreserved };
     mapStates.set(api, { bytes, offset, sectorSize, hashCount, blockCount, hashTable, blockTable, validateArchive });
     return api;
-}
-
-export function runMpqTests() {
-    const exists = 0x80000000, fixedEncrypted = 0x80030200;
-    const prefix = Buffer.from('HM3W: preserve the editor map prefix\0');
-    function tables(bytes) {
-        const offset = bytes.indexOf(Buffer.from([77, 80, 81, 26]));
-        const header = bytes.subarray(offset, offset + 32);
-        const hashStart = offset + header.readUInt32LE(16), blockStart = offset + header.readUInt32LE(20);
-        return { offset, header,
-            hashes: transform(bytes.subarray(hashStart, hashStart + header.readUInt32LE(24) * 16), hash('(hash table)', 3)),
-            blocks: transform(bytes.subarray(blockStart, blockStart + header.readUInt32LE(28) * 16), hash('(block table)', 3)) };
-    }
-    function fixture(source, { attributes = false, tight = false } = {}) {
-        const entries = source.map(entry => ({ ...entry, data: Buffer.from(entry.data) }));
-        if (attributes) entries.push({ name: '(attributes)', data: Buffer.alloc(0) });
-        const count = entries.length;
-        if (attributes) {
-            const data = Buffer.alloc(8 + count * 28);
-            data.writeUInt32LE(100, 0); data.writeUInt32LE(7, 4);
-            entries.forEach((entry, index) => {
-                const original = entry.decoded ?? entry.data;
-                data.writeUInt32LE(crc32(original), 8 + index * 4);
-                data.writeBigUInt64LE(0x0102030405060708n + BigInt(index), 8 + count * 4 + index * 8);
-                createHash('md5').update(original).digest().copy(data, 8 + count * 12 + index * 16);
-            });
-            entries[count - 1].data = data;
-        }
-        const hashes = Buffer.alloc(32 * 16, 0xff), blocks = Buffer.alloc(count * 16);
-        let cursor = 32;
-        entries.forEach((entry, index) => {
-            const start = entry.start ?? (tight ? cursor : 512 + index * 1024);
-            blocks.writeUInt32LE(start, index * 16);
-            blocks.writeUInt32LE(entry.data.length, index * 16 + 4);
-            blocks.writeUInt32LE(entry.length ?? entry.decoded?.length ?? entry.data.length, index * 16 + 8);
-            blocks.writeUInt32LE(entry.flags ?? exists, index * 16 + 12);
-            cursor = Math.max(cursor, start + entry.data.length);
-            if (entry.name === undefined) return;
-            let slot = hash(entry.name, 0) % 32;
-            while (hashes.readUInt32LE(slot * 16 + 12) !== 0xffffffff) slot = (slot + 1) % 32;
-            hashes.writeUInt32LE(hash(entry.name, 1), slot * 16);
-            hashes.writeUInt32LE(hash(entry.name, 2), slot * 16 + 4);
-            hashes.writeUInt32LE(entry.locale ?? 0, slot * 16 + 8);
-            hashes.writeUInt32LE(index, slot * 16 + 12);
-        });
-        const empty = Array.from({ length: 32 }, (_, index) => index)
-            .find(index => hashes.readUInt32LE(index * 16 + 12) === 0xffffffff);
-        hashes.writeUInt32LE(0xfffffffe, empty * 16 + 12);
-        const hashOffset = cursor + (tight ? 0 : 2048), blockOffset = hashOffset + hashes.length;
-        const archiveSize = blockOffset + blocks.length, bytes = Buffer.alloc(prefix.length + archiveSize, 0x73);
-        prefix.copy(bytes);
-        const header = bytes.subarray(prefix.length, prefix.length + 32);
-        header.fill(0); Buffer.from([77, 80, 81, 26]).copy(header);
-        header.writeUInt32LE(32, 4); header.writeUInt32LE(archiveSize, 8);
-        header.writeUInt32LE(hashOffset, 16); header.writeUInt32LE(blockOffset, 20);
-        header.writeUInt32LE(32, 24); header.writeUInt32LE(count, 28);
-        entries.forEach((entry, index) => entry.data.copy(bytes, prefix.length + blocks.readUInt32LE(index * 16)));
-        transform(hashes, hash('(hash table)', 3), true).copy(bytes, prefix.length + hashOffset);
-        transform(blocks, hash('(block table)', 3), true).copy(bytes, prefix.length + blockOffset);
-        return bytes;
-    }
-    function mutate(bytes, change) {
-        const result = Buffer.from(bytes), state = tables(result);
-        change(state, result);
-        transform(state.hashes, hash('(hash table)', 3), true).copy(result, state.offset + state.header.readUInt32LE(16));
-        transform(state.blocks, hash('(block table)', 3), true).copy(result, state.offset + state.header.readUInt32LE(20));
-        return result;
-    }
-    function packed(bytes, index) {
-        const state = tables(bytes), p = index * 16;
-        const start = state.offset + state.blocks.readUInt32LE(p);
-        return bytes.subarray(start, start + state.blocks.readUInt32LE(p + 4));
-    }
-    function attributeRow(data, count, index) {
-        return Buffer.concat([data.subarray(8 + index * 4, 12 + index * 4),
-            data.subarray(8 + count * 4 + index * 8, 16 + count * 4 + index * 8),
-            data.subarray(8 + count * 12 + index * 16, 24 + count * 12 + index * 16)]);
-    }
-    function encryptedSectors(name, raw, start) {
-        const count = Math.ceil(raw.length / 512), offsets = Buffer.alloc((count + 1) * 4), chunks = [];
-        const key = ((hash(name.split(/[\\/]/).pop(), 3) + start) ^ raw.length) >>> 0;
-        let cursor = offsets.length;
-        for (let index = 0; index < count; index++) {
-            offsets.writeUInt32LE(cursor, index * 4);
-            const sector = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw.subarray(index * 512, (index + 1) * 512))]);
-            chunks.push(transform(sector, (key + index) >>> 0, true));
-            cursor += sector.length;
-        }
-        offsets.writeUInt32LE(cursor, count * 4);
-        return Buffer.concat([transform(offsets, (key - 1) >>> 0, true), ...chunks]);
-    }
-    const fixedName = 'vault\\fixed.bin', fixedStart = 96;
-    const secret = Buffer.from('encrypted map payload '.repeat(80));
-    const source = fixture([
-        { name: 'readable.txt', data: Buffer.from('original readable payload') },
-        { name: 'localized.bin', locale: 0, data: Buffer.from('neutral') },
-        { name: 'localized.bin', locale: 0x01000412, data: Buffer.from('Korean') },
-        { name: 'opaque.bin', flags: 0x80000100, length: 123, data: Buffer.from('opaque PKWARE bytes') },
-        { data: Buffer.alloc(80, 0x42) },
-        { name: fixedName, start: fixedStart, flags: fixedEncrypted, decoded: secret,
-            data: encryptedSectors(fixedName, secret, fixedStart) },
-        { name: 'empty.bin', data: Buffer.alloc(0) },
-        // An empty fixed-key block inside a real pinned interval reserves no space.
-        { name: 'fixed-empty.bin', start: fixedStart + 1, flags: 0x80030000, data: Buffer.alloc(0) },
-        { name: '(listfile)', data: Buffer.from('readable.txt\r\nlocalized.bin\r\nvault\\fixed.bin\r\nempty.bin\r\n(listfile)\r\n(attributes)\r\n') }
-    ], { attributes: true });
-    const original = tables(source), originalCount = original.header.readUInt32LE(28);
-    assert.deepEqual(openMap(source).read(fixedName), secret, 'Encrypted fixture must really decode');
-    assert.throws(() => openMap(source).read('localized.bin'), /Multiple locale/);
-    assert.throws(() => openMap(source).read('opaque.bin'), /PKWARE/);
-    const compacted = openMap(source).compact(), compactState = tables(compacted);
-    assert(compacted.length < source.length, 'Gapped fixture must shrink');
-    assert.deepEqual(compacted.subarray(0, prefix.length), prefix);
-    assert.deepEqual(compactState.hashes, original.hashes, 'Hash slots, locale and deletion markers must survive');
-    for (let index = 0; index < originalCount; index++) {
-        assert.deepEqual(packed(compacted, index), packed(source, index), 'Every live block, including orphan bytes, must survive');
-        assert.deepEqual(compactState.blocks.subarray(index * 16 + 4, index * 16 + 16),
-            original.blocks.subarray(index * 16 + 4, index * 16 + 16));
-    }
-    assert.equal(compactState.blocks.readUInt32LE(5 * 16), fixedStart, 'FIX_KEY ciphertext must stay at its original offset');
-    assert.equal(compactState.blocks.readUInt32LE(7 * 16), fixedStart + 1, 'Empty fixed-key block keeps its offset');
-    assert.deepEqual(openMap(compacted).read(fixedName), secret, 'Pinned encrypted sectors must remain readable');
-    assert.deepEqual(openMap(compacted).read('empty.bin'), Buffer.alloc(0));
-    assert.deepEqual(openMap(compacted).read('(attributes)'), openMap(source).read('(attributes)'));
-    assert.deepEqual(openMap(compacted).compact(), compacted, 'Compaction must be bytewise idempotent');
-    const identical = [['readable.txt', openMap(source).read('readable.txt')], [fixedName, secret], ['empty.bin', Buffer.alloc(0)]];
-    assert.deepEqual(openMap(source).replace(identical), compacted, 'Identical replacements must only reclaim gaps');
-    assert.deepEqual(openMap(compacted).replace(identical), compacted, 'Identical replacements must not rewrite encrypted or empty entries');
-
-    const changed = Buffer.alloc(900, 0x51), assetName = 'new\\asset.bin', asset = Buffer.from('new imported asset');
-    const requested = [['readable.txt', changed], [assetName, asset]];
-    const replaced = openMap(source).replace(requested), replacedMap = openMap(replaced), replacementState = tables(replaced);
-    assert.deepEqual(replacedMap.read('readable.txt'), changed);
-    assert.deepEqual(replacedMap.read(assetName), asset);
-    assert.deepEqual(replacedMap.read(fixedName), secret);
-    assert.equal(replacementState.header.readUInt32LE(28), originalCount + 1, 'Only the addition gets a new block index');
-    for (let slot = 0; slot < 32; slot++) {
-        if (original.hashes.readUInt32LE(slot * 16 + 12) < originalCount) {
-            assert.deepEqual(replacementState.hashes.subarray(slot * 16, slot * 16 + 16), original.hashes.subarray(slot * 16, slot * 16 + 16));
-        }
-    }
-    const importedNames = replacedMap.read('(listfile)').toString('utf8').split(/\r?\n/);
-    assert.equal(importedNames.filter(name => name === assetName).length, 1);
-    const oldAttributes = openMap(source).read('(attributes)'), attributes = replacedMap.read('(attributes)');
-    const nextCount = originalCount + 1;
-    assert.equal(attributes.length, 8 + nextCount * 28);
-    for (let index = 0; index < originalCount; index++) {
-        assert.deepEqual(attributes.subarray(8 + nextCount * 4 + index * 8, 16 + nextCount * 4 + index * 8),
-            oldAttributes.subarray(8 + originalCount * 4 + index * 8, 16 + originalCount * 4 + index * 8), 'Existing timestamps must survive at their block indices');
-        if (index !== 0 && index !== 8) assert.deepEqual(attributeRow(attributes, nextCount, index), attributeRow(oldAttributes, originalCount, index));
-    }
-    for (const [index, raw] of [[0, changed], [8, replacedMap.read('(listfile)')], [originalCount, asset]]) {
-        assert.equal(attributes.readUInt32LE(8 + index * 4), crc32(raw));
-        assert.deepEqual(attributes.subarray(8 + nextCount * 12 + index * 16, 24 + nextCount * 12 + index * 16), createHash('md5').update(raw).digest());
-    }
-    assert.equal(attributes.readBigUInt64LE(8 + nextCount * 4 + originalCount * 8), 0n, 'New entries have deterministic zero timestamps');
-    assert.deepEqual(openMap(replaced).replace(requested), replaced, 'Repeated replacements and additions must be bytewise idempotent');
-    assert.deepEqual(openMap(replaced).replace([[assetName, asset]]), replaced, 'An existing addition must not append another listfile entry');
-    assert.deepEqual(openMap(replaced).compact(), replaced);
-    const opaqueReplacement = Buffer.from('replacement for unsupported original data');
-    assert.deepEqual(openMap(openMap(source).replace([['opaque.bin', opaqueReplacement]])).read('opaque.bin'), opaqueReplacement);
-
-    const tight = fixture([{ name: 'tight.bin', data: Buffer.from('already compact') }, { name: 'zero.bin', data: Buffer.alloc(0) }], { tight: true });
-    assert.deepEqual(openMap(tight).compact(), tight, 'An equal-size candidate must not rearrange an archive');
-    const highEmpty = mutate(source, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(8), 7 * 16));
-    assert.deepEqual(openMap(highEmpty).compact(), highEmpty, 'A larger candidate caused by a high pinned offset must keep the original archive');
-
-    assert.throws(() => openMap(mutate(source, ({ blocks }) => blocks.writeUInt32LE(31, 0))).compact(), /Invalid live MPQ payload range/);
-    assert.throws(() => openMap(mutate(source, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(8), 4))).compact(), /Invalid live MPQ payload range/);
-    assert.throws(() => openMap(mutate(source, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(16), 0))).compact(), /Overlapping/);
-    assert.throws(() => openMap(mutate(source, ({ hashes }) => hashes.writeUInt32LE(originalCount, 12))).compact(), /Invalid MPQ block reference/);
-    assert.throws(() => openMap(mutate(source, ({ blocks }) => blocks.writeUInt32LE(0, 12))).compact(), /inactive block/);
-    const signed = fixture([{ name: '(signature)', data: Buffer.from('signed archive') }]);
-    assert.throws(() => openMap(signed).compact(), /Signed maps/);
-    assert.throws(() => openMap(signed).replace([]), /Signed maps/);
-    assert.throws(() => openMap(Buffer.concat([source, Buffer.from([0])])), /trailer\/signature/);
-
-    const unsupported = Buffer.alloc(9); unsupported.writeUInt32LE(8, 0); unsupported.writeUInt32LE(9, 4); unsupported[8] = 8;
-    const unsupportedMap = fixture([{ name: 'mask.bin', flags: 0x80000200, length: 32, data: unsupported }]);
-    assert.throws(() => openMap(unsupportedMap).read('mask.bin'), /Unsupported compression mask/);
-    assert.deepEqual(openMap(openMap(unsupportedMap).replace([['mask.bin', opaqueReplacement]])).read('mask.bin'), opaqueReplacement);
-    const broken = Buffer.alloc(12); broken.writeUInt32LE(8, 0); broken.writeUInt32LE(12, 4); broken.set([2, 255, 255, 255], 8);
-    const malformed = fixture([{ name: 'broken.bin', flags: 0x80000200, length: 32, data: broken }]);
-    assert.throws(() => openMap(malformed).replace([['broken.bin', opaqueReplacement]]), 'Corrupt zlib data must not become an optimization fallback');
-    const badOffsets = Buffer.from(broken); badOffsets.writeUInt32LE(7, 0);
-    const invalidSectors = fixture([{ name: 'broken.bin', flags: 0x80000200, length: 32, data: badOffsets }]);
-    assert.throws(() => openMap(invalidSectors).replace([['broken.bin', opaqueReplacement]]), /Invalid sector offsets/);
-    console.log('MPQ tests passed: live/orphan bytes, locale slots, attributes, encrypted pinning, empty entries, no-op/idempotent updates and malformed archives.');
 }

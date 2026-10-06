@@ -1,10 +1,181 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { openMap, runMpqTests, crc32 } from '../src/mpq.mjs';
-import { createTestMap, inspectTestTables, mutateTestMap, fixtureHash } from './mpq-fixture.mjs';
+import { openMap, crc32 } from '../src/mpq.mjs';
+import { createTestMap, inspectTestTables, mutateTestMap, fixtureHash, fixtureTransform } from './mpq-fixture.mjs';
 
-test('original MPQ regressions remain intact', () => runMpqTests());
+test('original MPQ regressions remain intact', () => {
+    const exists = 0x80000000, fixedEncrypted = 0x80030200;
+    const prefix = Buffer.from('HM3W: preserve the editor map prefix\0');
+    function fixture(source, { attributes = false, tight = false } = {}) {
+        const entries = source.map(entry => ({ ...entry, data: Buffer.from(entry.data) }));
+        if (attributes) entries.push({ name: '(attributes)', data: Buffer.alloc(0) });
+        const count = entries.length;
+        if (attributes) {
+            const data = Buffer.alloc(8 + count * 28);
+            data.writeUInt32LE(100, 0); data.writeUInt32LE(7, 4);
+            entries.forEach((entry, index) => {
+                const original = entry.decoded ?? entry.data;
+                data.writeUInt32LE(crc32(original), 8 + index * 4);
+                data.writeBigUInt64LE(0x0102030405060708n + BigInt(index), 8 + count * 4 + index * 8);
+                createHash('md5').update(original).digest().copy(data, 8 + count * 12 + index * 16);
+            });
+            entries[count - 1].data = data;
+        }
+        const hashes = Buffer.alloc(32 * 16, 0xff), blocks = Buffer.alloc(count * 16);
+        let cursor = 32;
+        entries.forEach((entry, index) => {
+            const start = entry.start ?? (tight ? cursor : 512 + index * 1024);
+            blocks.writeUInt32LE(start, index * 16);
+            blocks.writeUInt32LE(entry.data.length, index * 16 + 4);
+            blocks.writeUInt32LE(entry.length ?? entry.decoded?.length ?? entry.data.length, index * 16 + 8);
+            blocks.writeUInt32LE(entry.flags ?? exists, index * 16 + 12);
+            cursor = Math.max(cursor, start + entry.data.length);
+            if (entry.name === undefined) return;
+            let slot = fixtureHash(entry.name, 0) % 32;
+            while (hashes.readUInt32LE(slot * 16 + 12) !== 0xffffffff) slot = (slot + 1) % 32;
+            hashes.writeUInt32LE(fixtureHash(entry.name, 1), slot * 16);
+            hashes.writeUInt32LE(fixtureHash(entry.name, 2), slot * 16 + 4);
+            hashes.writeUInt32LE(entry.locale ?? 0, slot * 16 + 8);
+            hashes.writeUInt32LE(index, slot * 16 + 12);
+        });
+        const empty = Array.from({ length: 32 }, (_, index) => index)
+            .find(index => hashes.readUInt32LE(index * 16 + 12) === 0xffffffff);
+        hashes.writeUInt32LE(0xfffffffe, empty * 16 + 12);
+        const hashOffset = cursor + (tight ? 0 : 2048), blockOffset = hashOffset + hashes.length;
+        const archiveSize = blockOffset + blocks.length, bytes = Buffer.alloc(prefix.length + archiveSize, 0x73);
+        prefix.copy(bytes);
+        const header = bytes.subarray(prefix.length, prefix.length + 32);
+        header.fill(0); Buffer.from([77, 80, 81, 26]).copy(header);
+        header.writeUInt32LE(32, 4); header.writeUInt32LE(archiveSize, 8);
+        header.writeUInt32LE(hashOffset, 16); header.writeUInt32LE(blockOffset, 20);
+        header.writeUInt32LE(32, 24); header.writeUInt32LE(count, 28);
+        entries.forEach((entry, index) => entry.data.copy(bytes, prefix.length + blocks.readUInt32LE(index * 16)));
+        fixtureTransform(hashes, fixtureHash('(hash table)', 3), true).copy(bytes, prefix.length + hashOffset);
+        fixtureTransform(blocks, fixtureHash('(block table)', 3), true).copy(bytes, prefix.length + blockOffset);
+        return bytes;
+    }
+    function packed(bytes, index) {
+        const state = inspectTestTables(bytes), p = index * 16;
+        const start = state.offset + state.blocks.readUInt32LE(p);
+        return bytes.subarray(start, start + state.blocks.readUInt32LE(p + 4));
+    }
+    function attributeRow(data, count, index) {
+        return Buffer.concat([data.subarray(8 + index * 4, 12 + index * 4),
+            data.subarray(8 + count * 4 + index * 8, 16 + count * 4 + index * 8),
+            data.subarray(8 + count * 12 + index * 16, 24 + count * 12 + index * 16)]);
+    }
+    function encryptedSectors(name, raw, start) {
+        const count = Math.ceil(raw.length / 512), offsets = Buffer.alloc((count + 1) * 4), chunks = [];
+        const key = ((fixtureHash(name.split(/[\\/]/).pop(), 3) + start) ^ raw.length) >>> 0;
+        let cursor = offsets.length;
+        for (let index = 0; index < count; index++) {
+            offsets.writeUInt32LE(cursor, index * 4);
+            const sector = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw.subarray(index * 512, (index + 1) * 512))]);
+            chunks.push(fixtureTransform(sector, (key + index) >>> 0, true));
+            cursor += sector.length;
+        }
+        offsets.writeUInt32LE(cursor, count * 4);
+        return Buffer.concat([fixtureTransform(offsets, (key - 1) >>> 0, true), ...chunks]);
+    }
+    const fixedName = 'vault\\fixed.bin', fixedStart = 96;
+    const secret = Buffer.from('encrypted map payload '.repeat(80));
+    const source = fixture([
+        { name: 'readable.txt', data: Buffer.from('original readable payload') },
+        { name: 'localized.bin', locale: 0, data: Buffer.from('neutral') },
+        { name: 'localized.bin', locale: 0x01000412, data: Buffer.from('Korean') },
+        { name: 'opaque.bin', flags: 0x80000100, length: 123, data: Buffer.from('opaque PKWARE bytes') },
+        { data: Buffer.alloc(80, 0x42) },
+        { name: fixedName, start: fixedStart, flags: fixedEncrypted, decoded: secret,
+            data: encryptedSectors(fixedName, secret, fixedStart) },
+        { name: 'empty.bin', data: Buffer.alloc(0) },
+        // An empty fixed-key block inside a real pinned interval reserves no space.
+        { name: 'fixed-empty.bin', start: fixedStart + 1, flags: 0x80030000, data: Buffer.alloc(0) },
+        { name: '(listfile)', data: Buffer.from('readable.txt\r\nlocalized.bin\r\nvault\\fixed.bin\r\nempty.bin\r\n(listfile)\r\n(attributes)\r\n') }
+    ], { attributes: true });
+    const original = inspectTestTables(source), originalCount = original.header.readUInt32LE(28);
+    assert.deepEqual(openMap(source).read(fixedName), secret, 'Encrypted fixture must really decode');
+    assert.throws(() => openMap(source).read('localized.bin'), /Multiple locale/);
+    assert.throws(() => openMap(source).read('opaque.bin'), /PKWARE/);
+    const compacted = openMap(source).compact(), compactState = inspectTestTables(compacted);
+    assert(compacted.length < source.length, 'Gapped fixture must shrink');
+    assert.deepEqual(compacted.subarray(0, prefix.length), prefix);
+    assert.deepEqual(compactState.hashes, original.hashes, 'Hash slots, locale and deletion markers must survive');
+    for (let index = 0; index < originalCount; index++) {
+        assert.deepEqual(packed(compacted, index), packed(source, index), 'Every live block, including orphan bytes, must survive');
+        assert.deepEqual(compactState.blocks.subarray(index * 16 + 4, index * 16 + 16),
+            original.blocks.subarray(index * 16 + 4, index * 16 + 16));
+    }
+    assert.equal(compactState.blocks.readUInt32LE(5 * 16), fixedStart, 'FIX_KEY ciphertext must stay at its original offset');
+    assert.equal(compactState.blocks.readUInt32LE(7 * 16), fixedStart + 1, 'Empty fixed-key block keeps its offset');
+    assert.deepEqual(openMap(compacted).read(fixedName), secret, 'Pinned encrypted sectors must remain readable');
+    assert.deepEqual(openMap(compacted).read('empty.bin'), Buffer.alloc(0));
+    assert.deepEqual(openMap(compacted).read('(attributes)'), openMap(source).read('(attributes)'));
+    assert.deepEqual(openMap(compacted).compact(), compacted, 'Compaction must be bytewise idempotent');
+    const identical = [['readable.txt', openMap(source).read('readable.txt')], [fixedName, secret], ['empty.bin', Buffer.alloc(0)]];
+    assert.deepEqual(openMap(source).replace(identical), compacted, 'Identical replacements must only reclaim gaps');
+    assert.deepEqual(openMap(compacted).replace(identical), compacted, 'Identical replacements must not rewrite encrypted or empty entries');
+
+    const changed = Buffer.alloc(900, 0x51), assetName = 'new\\asset.bin', asset = Buffer.from('new imported asset');
+    const requested = [['readable.txt', changed], [assetName, asset]];
+    const replaced = openMap(source).replace(requested), replacedMap = openMap(replaced), replacementState = inspectTestTables(replaced);
+    assert.deepEqual(replacedMap.read('readable.txt'), changed);
+    assert.deepEqual(replacedMap.read(assetName), asset);
+    assert.deepEqual(replacedMap.read(fixedName), secret);
+    assert.equal(replacementState.header.readUInt32LE(28), originalCount + 1, 'Only the addition gets a new block index');
+    for (let slot = 0; slot < 32; slot++) {
+        if (original.hashes.readUInt32LE(slot * 16 + 12) < originalCount) {
+            assert.deepEqual(replacementState.hashes.subarray(slot * 16, slot * 16 + 16), original.hashes.subarray(slot * 16, slot * 16 + 16));
+        }
+    }
+    const importedNames = replacedMap.read('(listfile)').toString('utf8').split(/\r?\n/);
+    assert.equal(importedNames.filter(name => name === assetName).length, 1);
+    const oldAttributes = openMap(source).read('(attributes)'), attributes = replacedMap.read('(attributes)');
+    const nextCount = originalCount + 1;
+    assert.equal(attributes.length, 8 + nextCount * 28);
+    for (let index = 0; index < originalCount; index++) {
+        assert.deepEqual(attributes.subarray(8 + nextCount * 4 + index * 8, 16 + nextCount * 4 + index * 8),
+            oldAttributes.subarray(8 + originalCount * 4 + index * 8, 16 + originalCount * 4 + index * 8), 'Existing timestamps must survive at their block indices');
+        if (index !== 0 && index !== 8) assert.deepEqual(attributeRow(attributes, nextCount, index), attributeRow(oldAttributes, originalCount, index));
+    }
+    for (const [index, raw] of [[0, changed], [8, replacedMap.read('(listfile)')], [originalCount, asset]]) {
+        assert.equal(attributes.readUInt32LE(8 + index * 4), crc32(raw));
+        assert.deepEqual(attributes.subarray(8 + nextCount * 12 + index * 16, 24 + nextCount * 12 + index * 16), createHash('md5').update(raw).digest());
+    }
+    assert.equal(attributes.readBigUInt64LE(8 + nextCount * 4 + originalCount * 8), 0n, 'New entries have deterministic zero timestamps');
+    assert.deepEqual(openMap(replaced).replace(requested), replaced, 'Repeated replacements and additions must be bytewise idempotent');
+    assert.deepEqual(openMap(replaced).replace([[assetName, asset]]), replaced, 'An existing addition must not append another listfile entry');
+    assert.deepEqual(openMap(replaced).compact(), replaced);
+    const opaqueReplacement = Buffer.from('replacement for unsupported original data');
+    assert.deepEqual(openMap(openMap(source).replace([['opaque.bin', opaqueReplacement]])).read('opaque.bin'), opaqueReplacement);
+
+    const tight = fixture([{ name: 'tight.bin', data: Buffer.from('already compact') }, { name: 'zero.bin', data: Buffer.alloc(0) }], { tight: true });
+    assert.deepEqual(openMap(tight).compact(), tight, 'An equal-size candidate must not rearrange an archive');
+    const highEmpty = mutateTestMap(source, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(8), 7 * 16));
+    assert.deepEqual(openMap(highEmpty).compact(), highEmpty, 'A larger candidate caused by a high pinned offset must keep the original archive');
+
+    assert.throws(() => openMap(mutateTestMap(source, ({ blocks }) => blocks.writeUInt32LE(31, 0))).compact(), /Invalid live MPQ payload range/);
+    assert.throws(() => openMap(mutateTestMap(source, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(8), 4))).compact(), /Invalid live MPQ payload range/);
+    assert.throws(() => openMap(mutateTestMap(source, ({ header, blocks }) => blocks.writeUInt32LE(header.readUInt32LE(16), 0))).compact(), /Overlapping/);
+    assert.throws(() => openMap(mutateTestMap(source, ({ hashes }) => hashes.writeUInt32LE(originalCount, 12))).compact(), /Invalid MPQ block reference/);
+    assert.throws(() => openMap(mutateTestMap(source, ({ blocks }) => blocks.writeUInt32LE(0, 12))).compact(), /inactive block/);
+    const signed = fixture([{ name: '(signature)', data: Buffer.from('signed archive') }]);
+    assert.throws(() => openMap(signed).compact(), /Signed maps/);
+    assert.throws(() => openMap(signed).replace([]), /Signed maps/);
+    assert.throws(() => openMap(Buffer.concat([source, Buffer.from([0])])), /trailer\/signature/);
+
+    const unsupported = Buffer.alloc(9); unsupported.writeUInt32LE(8, 0); unsupported.writeUInt32LE(9, 4); unsupported[8] = 8;
+    const unsupportedMap = fixture([{ name: 'mask.bin', flags: 0x80000200, length: 32, data: unsupported }]);
+    assert.throws(() => openMap(unsupportedMap).read('mask.bin'), /Unsupported compression mask/);
+    assert.deepEqual(openMap(openMap(unsupportedMap).replace([['mask.bin', opaqueReplacement]])).read('mask.bin'), opaqueReplacement);
+    const broken = Buffer.alloc(12); broken.writeUInt32LE(8, 0); broken.writeUInt32LE(12, 4); broken.set([2, 255, 255, 255], 8);
+    const malformed = fixture([{ name: 'broken.bin', flags: 0x80000200, length: 32, data: broken }]);
+    assert.throws(() => openMap(malformed).replace([['broken.bin', opaqueReplacement]]), 'Corrupt zlib data must not become an optimization fallback');
+    const badOffsets = Buffer.from(broken); badOffsets.writeUInt32LE(7, 0);
+    const invalidSectors = fixture([{ name: 'broken.bin', flags: 0x80000200, length: 32, data: badOffsets }]);
+    assert.throws(() => openMap(invalidSectors).replace([['broken.bin', opaqueReplacement]]), /Invalid sector offsets/);
+});
 
 test('explicit deletion preserves aliases, locale slots, unknown blocks and attribute indices', () => {
     const shared = Buffer.from('alias contents'), orphan = Buffer.from('unknown live bytes');

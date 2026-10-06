@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 
+export { canonicalPath } from './mpq.mjs';
+
 export const DEFAULT_CONFIG = Object.freeze({
     lua: Object.freeze({ minify: true, renameLocals: true, keepLocals: Object.freeze([]) }),
     cleanup: Object.freeze({ editor: false, development: false, keepFiles: Object.freeze([]) }),
@@ -29,8 +31,10 @@ export function resolveConfig(input = {}) {
         assert(Object.keys(supplied).every(key => Object.hasOwn(defaults, key)), 'Unknown ' + section + ' option');
         result[section] = { ...defaults, ...supplied };
     }
-    for (const [section, keys] of [['lua', ['minify', 'renameLocals']], ['cleanup', ['editor', 'development']], ['compression', ['enabled']]]) {
-        for (const key of keys) assert(typeof result[section][key] === 'boolean', section + '.' + key + ' must be boolean');
+    for (const [section, values] of Object.entries(result)) {
+        for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
+            if (typeof value === 'boolean') assert(typeof values[key] === 'boolean', section + '.' + key + ' must be boolean');
+        }
     }
     result.lua.keepLocals = names(result.lua.keepLocals, 'lua.keepLocals', true);
     result.cleanup.keepFiles = names(result.cleanup.keepFiles, 'cleanup.keepFiles');
@@ -40,5 +44,3 @@ export function resolveConfig(input = {}) {
     result.compression.levels = [...new Set(levels)].sort((a, b) => a - b);
     return result;
 }
-
-export const canonicalPath = name => name.replaceAll('/', '\\').toUpperCase();

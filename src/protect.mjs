@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { TextDecoder } from 'node:util';
-import { openMap } from './mpq.mjs';
+import { openMap, canonicalPath, MPQ_SIGNATURE } from './mpq.mjs';
 import { parseLua, transformLua } from './lua.mjs';
-import { resolveConfig, canonicalPath } from './config.mjs';
+import { resolveConfig } from './config.mjs';
 import { readScriptLanguage } from './map-info.mjs';
 import { planCleanup } from './cleanup.mjs';
 
@@ -10,7 +10,7 @@ export function protectMap(input, configuration = {}) {
     assert(Buffer.isBuffer(input), 'protectMap requires map bytes');
     const config = resolveConfig(configuration);
     const signature = input.subarray(0, 4);
-    assert(signature.equals(Buffer.from([77, 80, 81, 26])) || signature.toString('ascii') === 'HM3W', 'Expected a raw MPQ or HM3W-prefixed Warcraft III map');
+    assert(signature.equals(MPQ_SIGNATURE) || signature.toString('ascii') === 'HM3W', 'Expected a raw MPQ or HM3W-prefixed Warcraft III map');
     const original = openMap(input);
     assert(original.has('war3map.lua'), 'Missing root war3map.lua');
     assert(!original.has('war3map.j') && !original.has('Scripts\\war3map.j') && !original.has('Scripts\\war3map.lua'), 'Ambiguous or mixed map scripts are unsupported');
@@ -27,7 +27,8 @@ export function protectMap(input, configuration = {}) {
     }
     const cleanup = planCleanup(original, ast, config.cleanup);
     const transformed = transformLua(code, config.lua);
-    const replacements = [['war3map.lua', Buffer.from(transformed.code)]];
+    const protectedScript = Buffer.from(transformed.code);
+    const replacements = [['war3map.lua', protectedScript]];
     if (cleanup.imports) replacements.push(['war3map.imp', cleanup.imports]);
     const rewriteOptions = { levels: config.compression.enabled ? config.compression.levels : [0] };
     let result = original.replace(replacements, rewriteOptions);
@@ -37,7 +38,7 @@ export function protectMap(input, configuration = {}) {
         result = current.optimize({ names: current.listNames().filter(name => !excluded.has(canonicalPath(name))), levels: config.compression.levels });
     }
     const verified = openMap(result);
-    assert(verified.read('war3map.lua').equals(Buffer.from(transformed.code)), 'Final script readback mismatch');
+    assert(verified.read('war3map.lua').equals(protectedScript), 'Final script readback mismatch');
     parseLua(transformed.code, 'Protected war3map.lua');
     for (const name of ['war3map.w3i', 'war3map.w3e']) assert(verified.read(name).equals(original.read(name)), 'Required map entry changed: ' + name);
     for (const name of cleanup.names) assert(!verified.has(name), 'Cleanup candidate is still present: ' + name);

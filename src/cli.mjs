@@ -24,6 +24,21 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --help                  Show this usage
 `;
 
+// Single-use options and the setting they change.
+const SWITCHES = {
+    '--check': parsed => { parsed.check = true; },
+    '--help': parsed => { parsed.help = true; },
+    '--no-minify': parsed => { parsed.overrides.lua.minify = false; },
+    '--no-rename': parsed => { parsed.overrides.lua.renameLocals = false; },
+    '--no-cleanup': parsed => Object.assign(parsed.overrides.cleanup, { editor: false, development: false }),
+    '--clean-editor': parsed => { parsed.overrides.cleanup.editor = true; },
+    '--clean-development': parsed => { parsed.overrides.cleanup.development = true; },
+    '--no-compress': parsed => { parsed.overrides.compression.enabled = false; },
+};
+const VALUE_OPTIONS = { '--output': 'output', '--config': 'configPath' };
+// Repeatable options append to the configuration arrays instead of replacing them.
+const LIST_OPTIONS = { '--keep-local': ['lua', 'keepLocals'], '--keep-file': ['cleanup', 'keepFiles'], '--exclude-compress': ['compression', 'excludeFiles'] };
+
 export function parseArguments(args) {
     const parsed = { input: null, output: null, configPath: null, check: false, help: false, overrides: { lua: {}, cleanup: {}, compression: {} } };
     const seen = new Set();
@@ -31,21 +46,14 @@ export function parseArguments(args) {
     for (let index = 0; index < args.length; index++) {
         const argument = args[index];
         const value = () => { const next = args[++index]; assert(next && !next.startsWith('--'), 'Missing value for ' + argument); return next; };
-        if (['--output', '--config'].includes(argument)) {
+        if (Object.hasOwn(VALUE_OPTIONS, argument)) {
             unique(argument);
-            parsed[argument === '--output' ? 'output' : 'configPath'] = value();
-        } else if (argument === '--check' || argument === '--help') {
-            unique(argument); parsed[argument.slice(2)] = true;
-        } else if (argument === '--no-minify' || argument === '--no-rename') {
-            unique(argument); parsed.overrides.lua[argument === '--no-minify' ? 'minify' : 'renameLocals'] = false;
-        } else if (argument === '--no-cleanup') {
-            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false });
-        } else if (argument === '--clean-development' || argument === '--clean-editor') {
-            unique(argument); parsed.overrides.cleanup[argument === '--clean-editor' ? 'editor' : 'development'] = true;
-        } else if (argument === '--no-compress') {
-            unique(argument); parsed.overrides.compression.enabled = false;
-        } else if (['--keep-local', '--keep-file', '--exclude-compress'].includes(argument)) {
-            const [section, key] = argument === '--keep-local' ? ['lua', 'keepLocals'] : argument === '--keep-file' ? ['cleanup', 'keepFiles'] : ['compression', 'excludeFiles'];
+            parsed[VALUE_OPTIONS[argument]] = value();
+        } else if (Object.hasOwn(SWITCHES, argument)) {
+            unique(argument);
+            SWITCHES[argument](parsed);
+        } else if (Object.hasOwn(LIST_OPTIONS, argument)) {
+            const [section, key] = LIST_OPTIONS[argument];
             (parsed.overrides[section][key] ??= []).push(value());
         } else {
             assert(!argument.startsWith('-'), 'Unknown option: ' + argument);
@@ -63,17 +71,23 @@ export function parseArguments(args) {
     return parsed;
 }
 
+// CLI values override configuration values; repeated list options extend them.
+function mergeOverrides(configuration, overrides) {
+    return Object.fromEntries(Object.entries(configuration).map(([section, values]) => {
+        const merged = { ...values, ...overrides[section] };
+        for (const [key, list] of Object.entries(overrides[section])) {
+            if (Array.isArray(list)) merged[key] = [...values[key], ...list];
+        }
+        return [section, merged];
+    }));
+}
+
 export function run(args, { stdout = process.stdout, stderr = process.stderr } = {}) {
     try {
         const options = parseArguments(args);
         if (options.help) { stdout.write(USAGE); return 0; }
         const configuration = options.configPath ? JSON.parse(fs.readFileSync(options.configPath, 'utf8')) : {};
-        const defaults = resolveConfig(configuration);
-        const merged = Object.fromEntries(Object.keys(defaults).map(section => [section, { ...defaults[section], ...options.overrides[section],
-            ...(options.overrides[section].keepLocals ? { keepLocals: [...defaults[section].keepLocals, ...options.overrides[section].keepLocals] } : {}),
-            ...(options.overrides[section].keepFiles ? { keepFiles: [...defaults[section].keepFiles, ...options.overrides[section].keepFiles] } : {}),
-            ...(options.overrides[section].excludeFiles ? { excludeFiles: [...defaults[section].excludeFiles, ...options.overrides[section].excludeFiles] } : {}),
-        }]));
+        const merged = mergeOverrides(resolveConfig(configuration), options.overrides);
         const sourcePath = fs.realpathSync(options.input);
         assert(fs.statSync(sourcePath).isFile(), 'Input must be a file');
         const paths = options.output ? validateOutputPath(sourcePath, options.output) : { input: sourcePath, output: null };

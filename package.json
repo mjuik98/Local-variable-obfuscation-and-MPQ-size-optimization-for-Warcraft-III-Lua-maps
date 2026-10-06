@@ -12,7 +12,7 @@
   },
   "scripts": {
     "check": "node --input-type=module -e \"for (const name of ['mpq', 'lua', 'config', 'map-info', 'cleanup', 'protect', 'output', 'cli']) await import('./src/' + name + '.mjs');\"",
-    "test": "node --test test/lua.test.mjs test/mpq.test.mjs test/protect.test.mjs test/config.test.mjs test/output.test.mjs test/cli.test.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
     "protect": "node src/cli.mjs"
   },
   "dependencies": {

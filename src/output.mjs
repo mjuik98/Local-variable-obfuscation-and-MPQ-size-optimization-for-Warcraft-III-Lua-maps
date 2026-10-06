@@ -12,9 +12,8 @@ export function validateOutputPath(input, output) {
     const destination = path.join(parent, path.basename(candidate));
     const comparison = value => process.platform === 'win32' ? value.toLowerCase() : value;
     assert(comparison(source) !== comparison(destination), 'Output must differ from input');
-    assert(!fs.existsSync(destination), 'Output already exists; refusing to overwrite');
-    try { fs.lstatSync(destination); assert.fail('Output already exists; refusing to overwrite'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // lstat also detects dangling symbolic links at the destination.
+    assert(!fs.lstatSync(destination, { throwIfNoEntry: false }), 'Output already exists; refusing to overwrite');
     return { input: source, output: destination };
 }
 

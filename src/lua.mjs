@@ -6,9 +6,18 @@ const keywords = new Set('and break do else elseif end false for function goto i
 const reflectiveNames = new Set(['getlocal', 'setlocal', 'getupvalue', 'setupvalue', 'upvalueid', 'upvaluejoin', 'getinfo']);
 const sourceLocationNames = new Set(['getinfo', 'traceback']);
 const loaderRoles = ['load', 'loadfile', 'dofile', 'require'];
+const externalLoaderRoles = ['loadfile', 'dofile', 'require'];
+const builtinRoles = new Set([...loaderRoles, 'rawget', 'assert', 'pcall', 'xpcall']);
+const environmentNames = new Set(['_G', '_ENV']);
+const protectedLocalNames = new Set(['_ENV', 'self', 'main', 'config']);
+const valueNodeTypes = new Set(['MemberExpression', 'IndexExpression', 'CallExpression', 'StringCallExpression', 'TableCallExpression']);
+const tableFieldTypes = new Set(['TableValue', 'TableKey', 'TableKeyString']);
 const firstAlphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const laterAlphabet = firstAlphabet + '0123456789';
 const mergedPunctuators = new Set(['--', '==', '~=', '<=', '>=', '<<', '>>', '//', '::']);
+// Parser bookkeeping that is not part of the syntax tree.
+const metadataKeys = new Set(['comments', 'globals', 'range', 'loc']);
+const decodedStrings = new WeakMap();
 
 export function parseLua(code, label = 'Lua') {
     assert.equal(typeof code, 'string', 'Lua source must be a string');
@@ -16,26 +25,33 @@ export function parseLua(code, label = 'Lua') {
     catch (cause) { throw new Error(label + ': ' + cause.message, {cause}); }
 }
 
-function eachNode(node, visit) {
+// Visit every syntax node in source order with its parent node.
+export function eachNode(node, visit, parent = null) {
     if (!node || typeof node !== 'object') return;
-    if (typeof node.type === 'string') visit(node);
+    if (typeof node.type === 'string') visit(node, parent);
+    const owner = typeof node.type === 'string' ? node : parent;
     for (const [key, value] of Object.entries(node)) {
-        if (['comments', 'globals', 'range', 'loc'].includes(key)) continue;
-        if (Array.isArray(value)) value.forEach(child => eachNode(child, visit));
-        else if (value && typeof value === 'object') eachNode(value, visit);
+        if (metadataKeys.has(key)) continue;
+        if (Array.isArray(value)) value.forEach(child => eachNode(child, visit, owner));
+        else if (value && typeof value === 'object') eachNode(value, visit, owner);
     }
 }
 
-function literalString(node) {
+// Lua byte-string value of a string literal or a constant `..` concatenation
+// of literals; null for anything else.
+export function constantString(node) {
     if (node?.type === 'BinaryExpression' && node.operator === '..') {
-        const left = literalString(node.left), right = literalString(node.right);
+        const left = constantString(node.left), right = constantString(node.right);
         return left === null || right === null ? null : left + right;
     }
     if (node?.type !== 'StringLiteral') return null;
-    // Decode a copy as Lua bytes for analysis only. Source literals are emitted
-    // with their original raw text, including UTF-8 and escaped byte values.
-    const byteSource = Buffer.from(node.raw, 'utf8').toString('latin1');
-    return luaparse.parse('return ' + byteSource, {luaVersion: '5.3', encodingMode: 'pseudo-latin1'}).body[0].arguments[0].value;
+    if (!decodedStrings.has(node)) {
+        // Decode a copy as Lua bytes for analysis only. Source literals are emitted
+        // with their original raw text, including UTF-8 and escaped byte values.
+        const byteSource = Buffer.from(node.raw, 'utf8').toString('latin1');
+        decodedStrings.set(node, luaparse.parse('return ' + byteSource, {luaVersion: '5.3', encodingMode: 'pseudo-latin1'}).body[0].arguments[0].value);
+    }
+    return decodedStrings.get(node);
 }
 
 function scope(parent = null) { return {parent, bindings: new Map()}; }
@@ -52,17 +68,18 @@ function resolveBindings(ast) {
     const bindings = [], references = new Map(), definitions = new Map(), globalDefinitions = new Map();
     let reflectsNames = false;
     const markReflection = () => { reflectsNames = true; };
+    const isEnvironment = node => node.type === 'Identifier' && environmentNames.has(node.name);
     const declare = (current, node, implicit = false) => {
         const binding = {name: node.name, nodes: implicit ? [] : [node], implicit};
         bindings.push(binding);
         current.bindings.set(node.name, binding);
         return binding;
     };
-    const assign = (binding, value) => {
-        if (!value) return;
-        const sources = definitions.get(binding) ?? [];
-        sources.push(value); definitions.set(binding, sources);
+    const append = (sources, key, value) => {
+        if (sources.has(key)) sources.get(key).push(value);
+        else sources.set(key, [value]);
     };
+    const assign = (binding, value) => { if (value) append(definitions, binding, value); };
     const reference = (current, node) => {
         const binding = lookup(current, node.name);
         if (binding) {
@@ -87,10 +104,7 @@ function resolveBindings(ast) {
                 if (variable.type !== 'Identifier' || !node.init[index]) return;
                 const binding = lookup(current, variable.name);
                 if (binding) assign(binding, node.init[index]);
-                else {
-                    const sources = globalDefinitions.get(variable.name) ?? [];
-                    sources.push(node.init[index]); globalDefinitions.set(variable.name, sources);
-                }
+                else append(globalDefinitions, variable.name, node.init[index]);
             });
             return;
         case 'FunctionDeclaration': {
@@ -106,14 +120,12 @@ function resolveBindings(ast) {
         }
         case 'MemberExpression':
             if (reflectiveNames.has(node.identifier.name)) markReflection();
-            if (node.identifier.name === 'debug' &&
-                node.base.type === 'Identifier' && ['_G', '_ENV'].includes(node.base.name)) markReflection();
+            if (node.identifier.name === 'debug' && isEnvironment(node.base)) markReflection();
             visit(node.base, current);
             return;
         case 'IndexExpression': {
-            const key = literalString(node.index);
-            if (reflectiveNames.has(key) || (key === 'debug' && node.base.type === 'Identifier' &&
-                ['_G', '_ENV'].includes(node.base.name))) markReflection();
+            const key = constantString(node.index);
+            if (reflectiveNames.has(key) || (key === 'debug' && isEnvironment(node.base))) markReflection();
             visit(node.base, current); visit(node.index, current);
             return;
         }
@@ -143,7 +155,7 @@ function resolveBindings(ast) {
         case 'LabelStatement': case 'GotoStatement': return;
         default:
             for (const [key, value] of Object.entries(node)) {
-                if (['comments', 'globals', 'range', 'loc'].includes(key)) continue;
+                if (metadataKeys.has(key)) continue;
                 if (Array.isArray(value)) value.forEach(child => { if (child?.type) visit(child, current); });
                 else if (value?.type) visit(value, current);
             }
@@ -160,6 +172,7 @@ function resolveBindings(ast) {
 function reflectionRisk(ast, resolved, depth = 0) {
     let reflected = resolved.reflectsNames, opaque = false, sourceLocation = false;
     const empty = (unknown = false) => ({roles: new Set(), strings: new Set(), tables: new Set(), unknown});
+    const hasAny = (value, roles) => roles.some(role => value.roles.has(role));
     const merge = values => {
         const result = empty();
         for (const value of values) {
@@ -172,10 +185,10 @@ function reflectionRisk(ast, resolved, depth = 0) {
     };
     const builtin = name => {
         const result = empty();
-        if (['_G', '_ENV'].includes(name)) result.roles.add('environment');
+        if (environmentNames.has(name)) result.roles.add('environment');
         else if (name === 'package') result.roles.add('package');
         else if (name === 'debug') result.roles.add('debug');
-        else if ([...loaderRoles, 'rawget', 'assert', 'pcall', 'xpcall'].includes(name)) result.roles.add(name);
+        else if (builtinRoles.has(name)) result.roles.add(name);
         else result.unknown = true;
         return result;
     };
@@ -193,7 +206,7 @@ function reflectionRisk(ast, resolved, depth = 0) {
         const values = [];
         if (base.roles.has('environment') && key !== null) values.push(builtin(key));
         for (const table of base.tables) {
-            const fields = table.fields.filter(field => (field.type === 'TableKeyString' ? field.key.name : literalString(field.key)) === key);
+            const fields = table.fields.filter(field => (field.type === 'TableKeyString' ? field.key.name : constantString(field.key)) === key);
             values.push(...fields.map(field => valueOf(field.value, trail)));
         }
         const result = values.length ? merge(values) : empty(true);
@@ -201,10 +214,15 @@ function reflectionRisk(ast, resolved, depth = 0) {
         if (result.roles.has('package')) opaque = true;
         return result;
     };
-    const inspectLoader = (loader, args, trail) => {
-        if (['loadfile', 'dofile', 'require'].some(role => loader.roles.has(role))) opaque = true;
+    const keyedValue = (base, keys, trail) => {
+        if (base.roles.has('debug') && (keys.unknown || !keys.strings.size)) sourceLocation = true;
+        return keys.strings.size ? merge([...keys.strings].map(key => propertyValue(base, key, trail))) : empty(true);
+    };
+    // sourceValue is evaluated only for a possible `load`, as the source text.
+    const inspectLoader = (loader, sourceValue) => {
+        if (hasAny(loader, externalLoaderRoles)) opaque = true;
         if (!loader.roles.has('load')) return;
-        const source = valueOf(args[0], trail);
+        const source = sourceValue();
         if (source.unknown || !source.strings.size || source.roles.size || source.tables.size || depth >= 8) { opaque = true; return; }
         for (const code of source.strings) {
             if (code.startsWith('\x1b')) { opaque = true; continue; }
@@ -215,7 +233,32 @@ function reflectionRisk(ast, resolved, depth = 0) {
             reflected ||= risk.reflected; opaque ||= risk.opaque; sourceLocation ||= risk.sourceLocation;
         }
     };
-    const valueOf = (node, trail = new Set()) => {
+    const callValue = (node, trail) => {
+        // Evaluate each argument at most once per call. The analysis is
+        // deterministic and its flags only become true, so this matches
+        // evaluating the same argument repeatedly.
+        const args = argumentsOf(node), argumentValues = [];
+        const argumentValue = index => (argumentValues[index] ??= valueOf(args[index], trail));
+        const anyArgument = test => args.some((_, index) => test(argumentValue(index)));
+        const callee = valueOf(node.base, trail);
+        inspectLoader(callee, () => argumentValue(0));
+        // A loader passed to an unanalysed function can later execute code
+        // supplied there. Do not infer that the eventual source is harmless.
+        if (!hasAny(callee, ['assert', 'pcall', 'xpcall']) && anyArgument(value => hasAny(value, loaderRoles))) opaque = true;
+        // An environment can expose debug/load through a returned proxy,
+        // metatable, or callback. Only direct lookup/assert and a verified
+        // literal load's explicit environment have a known local contract.
+        if (!hasAny(callee, ['rawget', 'assert', 'load']) && anyArgument(value => value.roles.has('environment'))) opaque = true;
+        if (!hasAny(callee, ['rawget', 'assert']) && anyArgument(value => value.roles.has('debug'))) sourceLocation = true;
+        if (callee.roles.has('rawget')) return keyedValue(argumentValue(0), argumentValue(1), trail);
+        if (callee.roles.has('assert')) return argumentValue(0);
+        if (callee.roles.has('pcall') || callee.roles.has('xpcall')) {
+            const sourceIndex = callee.roles.has('xpcall') ? 2 : 1;
+            inspectLoader(argumentValue(0), () => argumentValue(sourceIndex));
+        }
+        return empty(true);
+    };
+    const computeValue = (node, trail) => {
         if (!node) return empty(true);
         switch (node.type) {
         case 'Identifier': {
@@ -225,7 +268,7 @@ function reflectionRisk(ast, resolved, depth = 0) {
             return sources ? merge([known, sourcesValue('global:' + node.name, sources, trail)]) : known;
         }
         case 'StringLiteral': {
-            const result = empty(); result.strings.add(literalString(node)); return result;
+            const result = empty(); result.strings.add(constantString(node)); return result;
         }
         case 'NilLiteral': case 'NumericLiteral': case 'BooleanLiteral': return empty();
         case 'TableConstructorExpression': { const result = empty(); result.tables.add(node); return result; }
@@ -241,50 +284,31 @@ function reflectionRisk(ast, resolved, depth = 0) {
         case 'IndexExpression': {
             const base = valueOf(node.base, trail), keys = valueOf(node.index, trail);
             if (base.roles.has('debug')) reflected = true;
-            if (base.roles.has('debug') && (keys.unknown || !keys.strings.size)) sourceLocation = true;
-            return keys.strings.size ? merge([...keys.strings].map(key => propertyValue(base, key, trail))) : empty(true);
+            return keyedValue(base, keys, trail);
         }
-        case 'CallExpression': case 'StringCallExpression': case 'TableCallExpression': {
-            const callee = valueOf(node.base, trail), args = argumentsOf(node);
-            inspectLoader(callee, args, trail);
-            // A loader passed to an unanalysed function can later execute code
-            // supplied there. Do not infer that the eventual source is harmless.
-            if (!['assert', 'pcall', 'xpcall'].some(role => callee.roles.has(role)) &&
-                args.some(argument => loaderRoles.some(role => valueOf(argument, trail).roles.has(role)))) opaque = true;
-            // An environment can expose debug/load through a returned proxy,
-            // metatable, or callback. Only direct lookup/assert and a verified
-            // literal load's explicit environment have a known local contract.
-            if (!['rawget', 'assert', 'load'].some(role => callee.roles.has(role)) &&
-                args.some(argument => valueOf(argument, trail).roles.has('environment'))) opaque = true;
-            if (!['rawget', 'assert'].some(role => callee.roles.has(role)) &&
-                args.some(argument => valueOf(argument, trail).roles.has('debug'))) sourceLocation = true;
-            if (callee.roles.has('rawget')) {
-                const base = valueOf(args[0], trail), keys = valueOf(args[1], trail);
-                if (base.roles.has('debug') && (keys.unknown || !keys.strings.size)) sourceLocation = true;
-                return keys.strings.size ? merge([...keys.strings].map(key => propertyValue(base, key, trail))) : empty(true);
-            }
-            if (callee.roles.has('assert')) return valueOf(args[0], trail);
-            if (callee.roles.has('pcall') || callee.roles.has('xpcall')) {
-                inspectLoader(valueOf(args[0], trail), args.slice(callee.roles.has('xpcall') ? 2 : 1), trail);
-            }
-            return empty(true);
-        }
+        case 'CallExpression': case 'StringCallExpression': case 'TableCallExpression': return callValue(node, trail);
         default: return empty(true);
         }
     };
+    // Values with an empty trail are shared by the whole traversal below; a
+    // repeated evaluation could only set flags that are already set.
+    const rootValues = new Map(), noTrail = new Set();
+    const valueOf = (node, trail = noTrail) => {
+        if (trail.size || !node) return computeValue(node, trail);
+        if (!rootValues.has(node)) rootValues.set(node, computeValue(node, trail));
+        return rootValues.get(node);
+    };
+    const exposesLoader = value => hasAny(value, loaderRoles) || value.roles.has('environment');
     eachNode(ast, node => {
         if (node.type === 'Identifier' && node.isLocal === false && node.name === 'package') opaque = true;
         if (node.type === 'Identifier' && node.isLocal === false && sourceLocationNames.has(node.name)) sourceLocation = true;
-        if (['MemberExpression', 'IndexExpression', 'CallExpression', 'StringCallExpression', 'TableCallExpression'].includes(node.type)) valueOf(node);
-        if (node.type === 'ReturnStatement' && node.arguments.some(argument =>
-            loaderRoles.some(role => valueOf(argument).roles.has(role)) || valueOf(argument).roles.has('environment'))) opaque = true;
+        if (valueNodeTypes.has(node.type)) valueOf(node);
+        if (node.type === 'ReturnStatement' && node.arguments.some(argument => exposesLoader(valueOf(argument)))) opaque = true;
         if (node.type === 'ReturnStatement' && node.arguments.some(argument => valueOf(argument).roles.has('debug'))) sourceLocation = true;
         if (node.type === 'AssignmentStatement' && node.variables.some((variable, index) =>
             (variable.type !== 'Identifier' || !resolved.references.has(variable)) &&
-                (loaderRoles.some(role => valueOf(node.init[index]).roles.has(role)) ||
-                ['environment', 'package', 'debug'].some(role => valueOf(node.init[index]).roles.has(role))))) opaque = true;
-        if (['TableValue', 'TableKey', 'TableKeyString'].includes(node.type) &&
-            (loaderRoles.some(role => valueOf(node.value).roles.has(role)) || valueOf(node.value).roles.has('environment'))) opaque = true;
+                hasAny(valueOf(node.init[index]), [...loaderRoles, 'environment', 'package', 'debug']))) opaque = true;
+        if (tableFieldTypes.has(node.type) && exposesLoader(valueOf(node.value))) opaque = true;
     });
     return {reflected, opaque, sourceLocation};
 }
@@ -329,11 +353,44 @@ function shape(node, replacements) {
     if (!node || typeof node !== 'object') return node;
     const result = {};
     for (const [key, value] of Object.entries(node)) {
-        if (['comments', 'globals', 'range', 'loc'].includes(key)) continue;
+        if (metadataKeys.has(key)) continue;
         if (key === 'isLocal' && node.type === 'Identifier') continue;
         result[key] = key === 'name' && node.type === 'Identifier' ?
             (replacements.get(node.range?.[0]) ?? value) : shape(value, replacements);
     }
+    return result;
+}
+
+function minifiedCode(code, replacements) {
+    const parts = [];
+    let previous;
+    for (const token of tokenize(code)) {
+        if (replacements.has(token.range[0])) token.raw = replacements.get(token.range[0]);
+        if (needsSpace(previous, token)) parts.push(' ');
+        parts.push(token.raw);
+        previous = token;
+    }
+    return parts.join('');
+}
+
+function renamedCode(code, edits) {
+    const parts = [];
+    let cursor = 0;
+    for (const edit of edits.toSorted((a, b) => a.start - b.start)) {
+        parts.push(code.slice(cursor, edit.start), edit.replacement);
+        cursor = edit.end;
+    }
+    parts.push(code.slice(cursor));
+    return parts.join('');
+}
+
+// Binding index of every identifier in source order; null for globals and fields.
+function referenceSignature(tree, resolved) {
+    const indices = new Map(resolved.bindings.map((binding, index) => [binding, index]));
+    const result = [];
+    eachNode(tree, node => {
+        if (node.type === 'Identifier') result.push(indices.get(resolved.references.get(node)) ?? null);
+    });
     return result;
 }
 
@@ -349,7 +406,7 @@ export function transformLua(code, {minify = true, renameLocals = true, keepLoca
     for (const name of preserved) occupied.add(name);
     const replacements = new Map(), edits = [];
     const canRename = binding => !binding.implicit && !preserved.has(binding.name) &&
-        !['_ENV', 'self', 'main', 'config'].includes(binding.name) && !/^(gg_|udg_)/.test(binding.name);
+        !protectedLocalNames.has(binding.name) && !/^(gg_|udg_)/.test(binding.name);
     const hasRenameCandidates = renameLocals && bindings.some(canRename);
     if (minify || hasRenameCandidates) {
         const risk = reflectionRisk(ast, originalBindings);
@@ -374,24 +431,7 @@ export function transformLua(code, {minify = true, renameLocals = true, keepLoca
         }
         renamedLocals++;
     }
-    let output;
-    if (minify) {
-        const tokens = tokenize(code);
-        let previous;
-        const parts = [];
-        for (const token of tokens) {
-            if (replacements.has(token.range[0])) token.raw = replacements.get(token.range[0]);
-            if (needsSpace(previous, token)) parts.push(' ');
-            parts.push(token.raw);
-            previous = token;
-        }
-        output = parts.join('');
-    } else {
-        output = code;
-        for (const edit of edits.sort((a, b) => b.start - a.start)) {
-            output = output.slice(0, edit.start) + edit.replacement + output.slice(edit.end);
-        }
-    }
+    const output = minify ? minifiedCode(code, replacements) : renamedCode(code, edits);
     const transformed = parseLua(output, 'Transformed Lua');
     assert.deepEqual(shape(transformed, new Map()), shape(ast, replacements), 'Lua structure changed outside local names');
     // Check lexical binding equivalence as well as syntax: a captured/global
@@ -401,14 +441,6 @@ export function transformLua(code, {minify = true, renameLocals = true, keepLoca
     originalBindings.bindings.forEach((binding, index) => {
         assert.equal(outputBindings.bindings[index].nodes.length, binding.nodes.length, 'Lua local references changed');
     });
-    const referenceSignature = (tree, resolved) => {
-        const indices = new Map(resolved.bindings.map((binding, index) => [binding, index]));
-        const result = [];
-        eachNode(tree, node => {
-            if (node.type === 'Identifier') result.push(indices.get(resolved.references.get(node)) ?? null);
-        });
-        return result;
-    };
     assert.deepEqual(referenceSignature(transformed, outputBindings), referenceSignature(ast, originalBindings), 'Lua lexical references changed');
     return {code: output, stats: {
         inputBytes: Buffer.byteLength(code), outputBytes: Buffer.byteLength(output),
