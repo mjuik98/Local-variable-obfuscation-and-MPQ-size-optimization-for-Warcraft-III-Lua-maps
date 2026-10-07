@@ -15,6 +15,9 @@ const destination = args.length ? path.resolve(root, args[1]) : path.join(parent
 assert(path.dirname(destination).toLowerCase() === parent.toLowerCase(), 'Package output must be a new directory directly inside dist');
 assert(!fs.existsSync(destination), 'Package already exists; refusing to overwrite: ' + destination);
 const stage = fs.mkdtempSync(path.join(parent, '.w3lp-package-'));
+// Windows keeps a just-run executable (or a scanner reading it) open for a
+// moment, so moving or removing the staged folder can briefly fail.
+const busy = error => ['EPERM', 'EBUSY', 'EACCES'].includes(error?.code);
 try {
     fs.mkdirSync(path.join(stage, 'runtime'));
     fs.copyFileSync(process.execPath, path.join(stage, 'runtime', 'node.exe'));
@@ -42,12 +45,22 @@ try {
     const presets = execFileSync(path.join(stage, 'runtime', 'node.exe'), [path.join(stage, 'src', 'desktop.mjs')], { input: JSON.stringify({ action: 'presets' }) + '\n', encoding: 'utf8', windowsHide: true, timeout: 15000 });
     const event = JSON.parse(presets.trim().split('\n').at(-1));
     assert(event.ok && event.presets?.length === 6 && event.presets.some(preset => preset.id === 'maximum'), 'Packaged desktop backend did not return the six presets');
-    fs.renameSync(stage, destination);
+    for (let attempt = 1; ; attempt++) {
+        try { fs.renameSync(stage, destination); break; }
+        catch (error) {
+            if (!busy(error) || attempt === 10 || fs.existsSync(destination)) throw error;
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+    }
     process.stdout.write('Windows package ready: ' + destination + '\n');
-} finally {
+} catch (error) {
+    // A successful build has moved the staged folder. A cleanup failure is
+    // reported without hiding the error that stopped packaging.
     if (fs.existsSync(stage)) {
         const resolved = path.resolve(stage);
         assert(path.dirname(resolved) === path.resolve(parent) && path.basename(resolved).startsWith('.w3lp-package-'), 'Unsafe package cleanup target');
-        fs.rmSync(resolved, { recursive: true, force: true });
+        try { fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); }
+        catch (cleanup) { process.stderr.write('Could not remove the staging folder ' + resolved + ': ' + cleanup.message + '\n'); }
     }
+    throw error;
 }
