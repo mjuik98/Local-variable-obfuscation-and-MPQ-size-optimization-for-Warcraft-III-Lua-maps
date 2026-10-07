@@ -17,14 +17,16 @@ export const CLEANUP_CANDIDATES = Object.freeze([...EDITOR_FILES, ...DEVELOPMENT
 const CANDIDATES = new Set(CLEANUP_CANDIDATES.map(canonicalPath));
 // Experimental editor blocking. Warcraft III never reads the editor trigger
 // files; World Editor needs them to load a map. The selected files are
-// replaced with data the editor's loader cannot use: 'version' keeps the
-// header and writes a format version no editor release writes, 'truncated'
-// ends inside the first field and 'empty' has no bytes. The game behaviour
-// of the map is unchanged; an MPQ editor can still remove the files, so this
-// is a deterrent only.
+// replaced with data the editor's loader cannot use: 'empty' has no bytes,
+// 'version' keeps the header and writes a format version no editor release
+// writes and 'truncated' ends inside the first field. In the 2026-10-07
+// in-editor check an empty war3map.wtg made World Editor refuse the map
+// with a trigger data error; the other forms crashed it, and war3map.wct
+// alone did not block it. The game behaviour of the map is unchanged; an MPQ
+// editor can still remove the files, so this is a deterrent only.
 export const EDITOR_BLOCK_FORMATS = Object.freeze(['version', 'truncated', 'empty']);
 export const EDITOR_BLOCK_FILES = Object.freeze(['both', 'wtg', 'wct']);
-export function editorBlockContents(name, format = 'version') {
+export function editorBlockContents(name, format = 'empty') {
     assert(EDITOR_FILES.some(file => canonicalPath(file) === canonicalPath(name)), 'Not an editor trigger file: ' + name);
     assert(EDITOR_BLOCK_FORMATS.includes(format), 'Unknown editor block format: ' + format);
     const triggers = canonicalPath(name) === 'WAR3MAP.WTG';
@@ -161,7 +163,7 @@ export function planCleanup(map, ast, options, context = {}) {
     // script must not reference either name, as for deletion.
     const blockTargets = options.editorBlock ? editorBlockTargets(options.editorBlockFiles ?? 'both') : [];
     for (const name of blockTargets) assert(map.has(name), 'Editor blocking requires ' + name + ' in the input map');
-    const blocked = blockTargets.map(name => [name, editorBlockContents(name, options.editorBlockFormat ?? 'version')]);
+    const blocked = blockTargets.map(name => [name, editorBlockContents(name, options.editorBlockFormat ?? 'empty')]);
     const targets = [...names, ...blocked.map(([name]) => name)];
     if (!targets.length) return { names, imports: null, blocked };
     if (reviewed) {

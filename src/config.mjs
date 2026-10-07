@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     lua: Object.freeze({ minify: true, renameLocals: true, keepLocals: Object.freeze([]), nameMode: 'compact', seed: 'warcraft-lua-protector', vmFunctions: Object.freeze([]),
         renameGlobals: false, renameFields: false, keepGlobals: Object.freeze([]), hideNatives: false, foldFourCC: false }),
     strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape', allLiterals: false }),
-    cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'version', editorBlockFiles: 'both', keepFiles: Object.freeze([]) }),
+    cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', keepFiles: Object.freeze([]) }),
     compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false }),
 });
 

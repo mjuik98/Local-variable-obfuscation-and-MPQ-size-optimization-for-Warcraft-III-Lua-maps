@@ -48,7 +48,7 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --keep-listfile         Keep the MPQ (listfile)
 --block-editor          Replace the editor trigger files with unsupported data (experimental)
 --no-block-editor       Keep the editor trigger files readable
---editor-block-format <id> version, truncated or empty data for editor blocking (default: version)
+--editor-block-format <id> empty, version or truncated data for editor blocking (default: empty)
 --editor-block-files <id> both, wtg or wct editor files to block (default: both)
 --cleanup-contract <file.json> Use a reviewed cleanup contract tied to the exact input
 --review-cleanup        Compare the previous reviewed map with this input; write no map

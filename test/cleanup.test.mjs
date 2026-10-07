@@ -182,8 +182,10 @@ test('editor blocking replaces only the two trigger files with unsupported data 
     const result = protectMap(source, { cleanup: { editorBlock: true } }), output = openMap(result.bytes);
     assert.deepEqual(result.summary.editorBlockedFiles, ['war3map.wtg', 'war3map.wct']);
     assert.deepEqual(result.summary.removedFiles, []);
-    assert.deepEqual(output.read('war3map.wtg'), Buffer.from([0x57, 0x54, 0x47, 0x21, 0xff, 0xff, 0xff, 0xff]));
-    assert.deepEqual(output.read('war3map.wct'), Buffer.from([0xff, 0xff, 0xff, 0xff]));
+    // The default empty form is the one World Editor refused with an error.
+    assert.deepEqual(output.read('war3map.wtg'), Buffer.alloc(0));
+    assert.deepEqual(output.read('war3map.wct'), Buffer.alloc(0));
+    assert.equal(result.summary.editorBlockFormat, 'empty');
     assert.deepEqual(output.read('war3map.wtg'), editorBlockContents('WAR3MAP.WTG'));
     for (const name of ['war3map.w3i', 'war3map.w3e', 'war3mapImported\\asset.bin']) assert.deepEqual(output.read(name), original.read(name), name);
     // Without recompression, every other packed payload and its metadata is kept.
@@ -221,7 +223,9 @@ test('editor blocking formats and target files are explicit and verified in the 
     assert.deepEqual(editorBlockContents('war3map.wtg', 'truncated'), Buffer.from('WTG!'));
     assert.deepEqual(editorBlockContents('war3map.wct', 'truncated'), Buffer.alloc(2));
     assert.deepEqual(editorBlockContents('war3map.wtg', 'empty'), Buffer.alloc(0));
-    assert.deepEqual(editorBlockContents('war3map.wct'), editorBlockContents('war3map.wct', 'version'));
+    assert.deepEqual(editorBlockContents('war3map.wct'), editorBlockContents('war3map.wct', 'empty'));
+    assert.deepEqual(editorBlockContents('war3map.wtg', 'version'), Buffer.from([0x57, 0x54, 0x47, 0x21, 0xff, 0xff, 0xff, 0xff]));
+    assert.deepEqual(editorBlockContents('war3map.wct', 'version'), Buffer.from([0xff, 0xff, 0xff, 0xff]));
     assert.throws(() => editorBlockContents('war3map.wtg', 'other'), /Unknown editor block format/);
     for (const format of ['version', 'truncated', 'empty']) for (const [files, targets] of [['both', ['war3map.wtg', 'war3map.wct']], ['wtg', ['war3map.wtg']], ['wct', ['war3map.wct']]]) {
         const result = protectMap(source, { cleanup: { editorBlock: true, editorBlockFormat: format, editorBlockFiles: files }, compression: { enabled: false } });

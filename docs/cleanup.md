@@ -50,11 +50,11 @@ npm run protect -- "C:\Maps\Reviewed.w3x" --check --hide-strings --clean-editor 
 
 **기본값은 꺼져 있고 어느 프리셋도 켜지 않는다.** 최대 보호 프리셋만 선택하면 적용되지 않는다. `cleanup.editorBlock` 또는 `--block-editor`(화면: 고급 설정의 **World Editor 열기 차단**)는 선택한 트리거 파일을 다음 형태 중 하나로 바꾼다.
 
-| 형태 (`cleanup.editorBlockFormat`, `--editor-block-format`) | `war3map.wtg` | `war3map.wct` |
-| --- | --- | --- |
-| `version` (기본) | `WTG!` + 형식 버전 `0xFFFFFFFF` (8바이트) | 형식 버전 `0xFFFFFFFF` (4바이트) |
-| `truncated` | `WTG!`만 (4바이트, 버전 없음) | `00 00` (2바이트, 버전 중간에서 끝남) |
-| `empty` | 0바이트 | 0바이트 |
+| 형태 (`cleanup.editorBlockFormat`, `--editor-block-format`) | `war3map.wtg` | `war3map.wct` | 2026-10-07 World Editor 결과 |
+| --- | --- | --- | --- |
+| `empty` (기본) | 0바이트 | 0바이트 | "트리거 데이터가 없거나 잘못되었습니다" 오류로 열기 거부 |
+| `version` | `WTG!` + 형식 버전 `0xFFFFFFFF` (8바이트) | 형식 버전 `0xFFFFFFFF` (4바이트) | 메모리 과부하 또는 예기치 않은 오류로 에디터 종료 |
+| `truncated` | `WTG!`만 (4바이트, 버전 없음) | `00 00` (2바이트, 버전 중간에서 끝남) | 예기치 않은 오류로 에디터 종료 |
 
 대상(`cleanup.editorBlockFiles`, `--editor-block-files`)은 `both`(기본), `wtg`, `wct` 중 하나다. 선택하지 않은 파일은 원래 내용을 유지한다. 결과 요약과 화면에 바꾼 파일과 형태를 표시한다. 두 파일은 World Editor의 트리거·사용자 정의 스크립트 데이터이며 Warcraft III는 맵을 실행할 때 읽지 않는다. 에디터 데이터 정리와 `(listfile)` 삭제만 적용한 사본은 World Editor에서 열렸으므로(검증 기록), 이 옵션은 파일을 지우는 대신 에디터가 읽지 못하는 데이터를 남긴다.
 
@@ -63,4 +63,4 @@ npm run protect -- "C:\Maps\Reviewed.w3x" --check --hide-strings --clean-editor 
 - `cleanup.editor`(두 파일 삭제)와 함께 켤 수 없고, `keepFiles`에 선택한 파일이 있으면 거부한다. `--no-cleanup`은 이 옵션도 해제한다. 배포 준비 프리셋에서 켜려면 에디터 파일 정리를 해제한다.
 - 바뀐 두 파일과 Lua 외의 모든 파일은 기존 MPQ 보존 검증을 거치고, 최종 맵에서 두 파일의 내용을 다시 읽어 확인한다. 이미 차단한 맵에 다시 적용해도 결과는 같다.
 
-**효과는 실제 World Editor에서 확인해야 한다.** 에디터가 이 데이터를 만났을 때 열기를 거부하는지, 경고 뒤 트리거 없이 여는지는 정적 검사로 확인할 수 없다. 2026-10-07 확인에서 `version`·`both` 사본은 World Editor가 메모리를 크게 사용하다 스스로 종료됐다([검증 기록](verification.md#2026-10-07-world-editor-열기-차단-확인)). 정상적인 오류 표시가 아니라 과부하에 의한 종료이므로, 맵을 연 PC가 한동안 느려질 수 있다. 원인 파일과 더 빨리 실패하는 형태는 `truncated`·`empty`와 단일 파일 대상으로 확인한다. 차단되더라도 MPQ 편집기로 두 파일을 지우거나 바꾸면 다시 열 수 있으므로 억제 수단이며 보호를 보장하지 않는다. 지형·오브젝트·import 데이터는 그대로 남는다. 편집용 원본 맵을 별도로 보관한다.
+**효과는 실제 World Editor에서 확인해야 한다.** 에디터가 이 데이터를 만났을 때 열기를 거부하는지, 경고 뒤 트리거 없이 여는지는 정적 검사로 확인할 수 없다. 2026-10-07 확인([검증 기록](verification.md#2026-10-07-world-editor-열기-차단-확인))에서 차단 여부는 `war3map.wtg`가 결정했다. `war3map.wct`만 바꾼 사본은 그대로 열렸다. `empty`는 정상적인 오류 메시지로 열기를 거부해 기본값으로 정했다. `version`·`truncated`는 에디터를 비정상 종료시키며 `version`은 맵을 연 PC의 메모리를 크게 사용하므로 권장하지 않는다. 모든 형태의 사본이 배틀넷 솔로 플레이에서 정상이었다. 이후 패치에서 에디터의 처리가 바뀔 수 있으므로 패치 뒤에는 다시 확인한다. 차단되더라도 MPQ 편집기로 두 파일을 지우거나 바꾸면 다시 열 수 있으므로 억제 수단이며 보호를 보장하지 않는다. 지형·오브젝트·import 데이터는 그대로 남는다. 편집용 원본 맵을 별도로 보관한다.

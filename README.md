@@ -13,7 +13,7 @@ Warcraft III Lua 맵의 이름을 난독화하고 배포 용량을 줄이는 로
 - 선택한 문자열 리터럴을 숫자 바이트 이스케이프로 숨긴다. 복원 함수·추가 호출 없이 Lua가 원래 바이트를 읽으며, 변환 뒤 모든 문자열의 바이트와 구문 구조를 확인한다.
 - 선택한 seed로 짧은 local 이름의 배정을 다양화하는 `seeded` 모드를 제공한다. 기존 `compact` 모드와 기본 출력은 유지한다.
 - 실험 옵션으로 `runtime` 문자열 숨김 범위를 rawcode·오더·콜백 이름·경로·툴팁 형식까지 넓힌다. 복원 바이트는 같으며 WTS 참조·빈 문자열·여러 줄 리터럴은 원문을 유지한다. [모든 리터럴 숨김](docs/protection.md#모든-리터럴-숨김-실험) 문서를 참고한다.
-- 실험 옵션으로 `war3map.wtg`·`war3map.wct`를 World Editor가 지원하지 않는 형식 버전으로 바꿔 에디터 열기를 차단하도록 시도한다. 게임은 두 파일을 읽지 않는다. [World Editor 열기 차단](docs/cleanup.md#world-editor-열기-차단-실험) 문서를 참고한다.
+- 실험 옵션으로 `war3map.wtg`·`war3map.wct`를 빈 데이터로 바꿔 World Editor가 "트리거 데이터가 없거나 잘못되었습니다" 오류로 열기를 거부하게 한다. 게임은 두 파일을 읽지 않는다. [World Editor 열기 차단](docs/cleanup.md#world-editor-열기-차단-실험) 문서를 참고한다.
 - 실험적인 `runtime` 문자열 모드는 ChaCha20 암호문을 4바이트 단위 숫자로 저장하고 순수 Lua로 복원한다. 원래 바이트를 처음 사용 시 복원해 내부 캐시에 보관하고 해당 암호문 테이블을 해제한다. 게임 난수·native·표준 라이브러리 호출에 의존하지 않는다. 복원 함수와 VM 해석기는 청크에서 쓰지 않는 가장 짧은 이름을 사용해 고정된 도구 식별 이름을 남기지 않는다.
 - 명시적으로 지정한 local 함수에 제한된 전용 VM을 적용한다. 원본 함수의 수치·논리식과 조건 분기를 seed별 명령 데이터로 바꾸며, 지정하지 않은 코드의 구문 보존과 출력 재파싱을 검사한다.
 - 지원 파일은 zlib 레벨·전략과 비압축 후보를 비교하고, 기존 payload보다 작아지는 경우에만 재압축한다. 기본은 이전과 같은 레벨 6·9와 `default` 전략이다. MPQ 빈 공간도 회수한다.
@@ -102,7 +102,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--clean-editor-data` | 참조 검사 후 `war3map.w3r/w3c/w3s`와 `war3map.imp` 정리 |
 | `--remove-listfile` / `--keep-listfile` | 모든 단계가 끝난 뒤 MPQ `(listfile)` 삭제 / 보존 (실험) |
 | `--block-editor` / `--no-block-editor` | 참조 검사 후 `war3map.wtg`·`war3map.wct`를 지원하지 않는 형식으로 대체해 World Editor 열기 차단 시도 / 해제 (실험) |
-| `--editor-block-format ID` / `--editor-block-files ID` | 열기 차단 데이터 형태 `version`·`truncated`·`empty` / 대상 `both`·`wtg`·`wct` (실험) |
+| `--editor-block-format ID` / `--editor-block-files ID` | 열기 차단 데이터 형태 `empty`(기본)·`version`·`truncated` / 대상 `both`(기본)·`wtg`·`wct` (실험) |
 | `--cleanup-contract File.json` | 정확히 일치하는 입력 맵의 의존성 검토 계약 읽기 |
 | `--review-cleanup` | 이전 계약과 두 입력 맵을 비교; 맵 출력 없음 |
 | `--previous-input Map.w3x` | 이전 계약에 정확히 일치하는 검토 원본 |

@@ -61,7 +61,7 @@ namespace WarcraftLuaProtectorDesktop
             compress = Flag("파일 재압축", EnabledValue(effective, "compression", "enabled"));
             zopfli = Flag("Zopfli 압축 후보 (느림)", EnabledValue(effective, "compression", "zopfli"));
             foreach (CheckBox check in new CheckBox[] { minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, allLiterals, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, blockEditor, compress, zopfli }) flags.Controls.Add(check);
-            blockFormat = Choice(new[] { "차단 형태: 버전 (version)", "차단 형태: 잘림 (truncated)", "차단 형태: 빈 파일 (empty)" }, BlockFormatIds, Convert.ToString(SectionValue(effective, "cleanup", "editorBlockFormat")));
+            blockFormat = Choice(new[] { "차단 형태: 버전 (version · 에디터 비정상 종료)", "차단 형태: 잘림 (truncated · 에디터 비정상 종료)", "차단 형태: 빈 파일 (empty · 권장)" }, BlockFormatIds, Convert.ToString(SectionValue(effective, "cleanup", "editorBlockFormat")));
             blockFiles = Choice(new[] { "대상: wtg · wct 모두", "대상: wtg만", "대상: wct만" }, BlockFileIds, Convert.ToString(SectionValue(effective, "cleanup", "editorBlockFiles")));
             blockFormat.Enabled = blockFiles.Enabled = blockEditor.Checked; blockEditor.CheckedChanged += delegate { blockFormat.Enabled = blockFiles.Enabled = blockEditor.Checked; };
             flags.Controls.Add(blockFormat); flags.Controls.Add(blockFiles);
@@ -104,7 +104,7 @@ namespace WarcraftLuaProtectorDesktop
             reset.Click += delegate { Overrides = new Dictionary<string, object>(); NoVm = false; DialogResult = DialogResult.OK; Close(); };
             buttons.Controls.Add(apply); buttons.Controls.Add(cancel); buttons.Controls.Add(reset); layout.Controls.Add(buttons, 0, 5); AcceptButton = apply; CancelButton = cancel;
         }
-        private static ComboBox Choice(string[] labels, string[] ids, string selected) { ComboBox box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, Margin = new Padding(4, 6, 18, 4) }; box.Items.AddRange(labels); box.SelectedIndex = Math.Max(0, Array.IndexOf(ids, selected)); return box; }
+        private static ComboBox Choice(string[] labels, string[] ids, string selected) { ComboBox box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 290, Margin = new Padding(4, 6, 18, 4) }; box.Items.AddRange(labels); box.SelectedIndex = Math.Max(0, Array.IndexOf(ids, selected)); return box; }
         private static CheckBox Flag(string text, bool value) { return new CheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(4, 8, 18, 4) }; }
         private static object SectionValue(IDictionary<string, object> value, string section, string key)
         {
