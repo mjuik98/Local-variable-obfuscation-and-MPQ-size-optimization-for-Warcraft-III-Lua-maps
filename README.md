@@ -122,7 +122,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `protect` | 기본 보호 | local 이름·공백 최적화, 파일 보존, 문자열 숨김 끔 |
 | `distribution` | 배포 준비 | 기본 보호 + 알려진 에디터·개발 파일 정리; 정리를 켜면 정확한 입력의 계약 필요 |
 | `hardened` | 보호 강화 | seed 기반 local 이름 변경 + 런타임 문자열 복원; 파일 보존·VM 자동 선택 없음 |
-| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + `(listfile)` 삭제; 파일 정리·섹터 크기 변경은 별도 |
+| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + `(listfile)` 삭제 + 64 KiB sector; 파일 정리는 별도 |
 
 설정 우선순위는 기본값 → 프리셋 → JSON → CLI 또는 화면의 명시적 선택이다. 프리셋을 생략하면 기존 기본 동작을 사용한다. JSON 설정은 덮어쓰기 전에 엄격하게 검증하며 잘못된 값을 CLI로 가리지 않는다. 반복 보존·제외·VM 선택 옵션은 JSON 배열에 추가된다. `--no-vm`은 합친 VM 목록을 모두 비우며 다른 VM 선택보다 우선한다. `distribution --no-cleanup`은 파일 정리를 해제한다. `hardened`와 `maximum`에서만 문자열 숨김을 기본으로 켠다. 화면의 문자열 체크박스가 최종 활성 여부를 결정한다.
 
@@ -132,7 +132,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --check --preset protect --hide-strings
 npm run protect -- "C:\Maps\MyMap.w3x" --check --preset hardened --seed "release-2026-10"
 npm run protect -- "C:\Maps\MyMap.w3x" --check --preset hardened --vm-function ReviewedCalculation
 npm run protect -- "C:\Maps\MyMap.w3x" --check --preset maximum --seed "release-2026-10"
-npm run protect -- "C:\Maps\MyMap.w3x" --check --preset maximum --sector-size-shift 7
+npm run protect -- "C:\Maps\MyMap.w3x" --check --preset maximum --keep-sector-size
 npm run protect -- --show-settings --preset protect --config "settings.json"
 npm run protect -- "C:\Maps\MyMap.w3x" --compare --cleanup-contract "reviewed.json"
 npm run protect -- "C:\Maps\MyMap.w3x" --check --details --compression-strategy default --compression-strategy filtered
@@ -147,6 +147,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --check --details --compression-strategy 
 - [Lua 보호 옵션](docs/protection.md): 문자열 숨김(escape·runtime), seed 이름, 선택적 함수 VM, 전역·닫힌 테이블 필드 이름 변경, 엔진·라이브러리 함수 숨김, `FourCC` 치환과 LoTKT 2.4E 측정 결과
 - [MPQ 구조 옵션](docs/archive.md): sector 크기 변경과 `(listfile)` 삭제
 - [파일 정리와 검토 계약](docs/cleanup.md): 에디터·개발·에디터 데이터 정리, 검토 계약 작성·재검토와 LoTKT 계약 파일
+- [게임 검증 기록과 체크리스트](docs/verification.md): 실제 Warcraft III에서 확인한 결과와 남은 확인 항목
 
 ## 설정 예시
 
