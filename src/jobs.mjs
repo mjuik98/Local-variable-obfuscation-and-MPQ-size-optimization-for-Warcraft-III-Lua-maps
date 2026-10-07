@@ -105,11 +105,10 @@ export function executeJob(request, { onProgress = () => {}, publish = writeNewO
         assert(request.cleanupContractPath, 'Contract review requires the previous cleanup contract');
         const previousPath = inputPath(request.previousInput), currentPath = inputPath(request.input);
         const previous = fs.readFileSync(previousPath), current = fs.readFileSync(currentPath);
-        const contractPath = fs.realpathSync(request.cleanupContractPath), contractBytes = fs.readFileSync(contractPath);
-        const contract = JSON.parse(contractBytes.toString('utf8'));
+        const contract = readJSON(request.cleanupContractPath, 'Cleanup contract');
         onProgress('review');
-        const review = reviewCleanupContract(previous, current, contract);
-        const unchanged = () => { assertFileUnchanged(previousPath, previous); assertFileUnchanged(currentPath, current); assertFileUnchanged(contractPath, contractBytes); };
+        const review = reviewCleanupContract(previous, current, contract.value);
+        const unchanged = () => { assertFileUnchanged(previousPath, previous); assertFileUnchanged(currentPath, current); assertFileUnchanged(contract.path, contract.bytes); };
         unchanged();
         if (request.action === 'review') {
             assert(!request.contractOutput, 'Use save-contract to explicitly save a proposed contract');
@@ -117,7 +116,7 @@ export function executeJob(request, { onProgress = () => {}, publish = writeNewO
         }
         assert(review.candidate, 'Dependency content changed or cannot be verified; review it again before creating a cleanup contract');
         assert(typeof request.contractOutput === 'string' && path.extname(request.contractOutput).toLowerCase() === '.json', 'An explicit new .json contract output is required');
-        const paths = validateOutputPath(fs.realpathSync(request.cleanupContractPath), request.contractOutput);
+        const paths = validateOutputPath(contract.path, request.contractOutput);
         onProgress('write');
         publish(paths.output, Buffer.from(JSON.stringify(review.candidate, null, 2) + '\n'), { beforePublish: unchanged });
         return { review, path: paths.output };

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { assertLuaResourceLimits, assertRuntimeRewriteSafe, getPreparedLuaAst, isLuaKeyword, parseLua, prepareLua, shortLuaName } from './lua.mjs';
+import { ignoredKeys as ignored } from './lua-syntax.mjs';
 import { createSeededRandom, validateSeed } from './seed.mjs';
 
 const binary = new Set(['+', '-', '*', '/', '//', '%', '^', '&', '|', '~', '<<', '>>', '==', '~=', '<', '<=', '>', '>=']);
 const unary = new Set(['-', '~', 'not']);
-const ignored = new Set(['range', 'loc', 'comments', 'globals']);
 
 function walk(node, visit, functionDepth = 0) {
     if (!node || typeof node !== 'object') return;

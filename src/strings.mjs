@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
-import luaparse from 'luaparse';
 import { assertLuaResourceLimits, assertRuntimeRewriteSafe, assertSourceRewriteSafe, getPreparedLuaAst, isLuaKeyword, parseLua, shortLuaName } from './lua.mjs';
+import { decodeLuaString, ignoredKeys as ignoredAstFields } from './lua-syntax.mjs';
 import { buildRuntimeStringHelper, cryptRuntimeString, deriveRuntimeStringKey, runtimeStringNonce } from './string-codec.mjs';
-
-const ignoredAstFields = new Set(['comments', 'globals', 'range', 'loc']);
 
 function visit(node, callback) {
     if (!node || typeof node !== 'object') return;
@@ -16,13 +14,8 @@ function visit(node, callback) {
     }
 }
 
-function literalBytes(raw) {
-    // Decode UTF-8 source as Lua byte strings, including \u{} and long-bracket
-    // newline rules. The actual source never passes through Latin-1 encoding.
-    const source = Buffer.from(raw).toString('latin1');
-    const parsed = luaparse.parse('return ' + source, { luaVersion: '5.3', encodingMode: 'pseudo-latin1' });
-    return Buffer.from(parsed.body[0].arguments[0].value, 'latin1');
-}
+// The actual source never passes through Latin-1 encoding.
+const literalBytes = raw => Buffer.from(decodeLuaString(raw), 'latin1');
 
 function verifySame(before, after, values, runtime) {
     const message = 'String transformation changed syntax or runtime bytes';

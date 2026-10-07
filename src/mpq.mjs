@@ -21,22 +21,25 @@ for (let low = 0; low < 256; low++) {
     }
 }
 // Canonical MPQ path bytes: '/' becomes '\\' and only ASCII letters are folded.
+const canonicalByte = c => c === 47 ? 92 : c >= 97 && c <= 122 ? c - 32 : c;
 function canonicalBytes(input) {
     const normalized = Buffer.from(input);
-    for (let i = 0; i < normalized.length; i++) {
-        if (normalized[i] === 47) normalized[i] = 92;
-        else if (normalized[i] >= 97 && normalized[i] <= 122) normalized[i] -= 32;
-    }
+    for (let i = 0; i < normalized.length; i++) normalized[i] = canonicalByte(normalized[i]);
     return normalized;
 }
 function hash(name, type) {
     let a = 0x7fed7fed, b = 0xeeeeeeee;
-    for (const c of canonicalBytes(Buffer.from(name, 'utf8'))) {
-        a = (crypt[type * 256 + c] ^ (a + b)) >>> 0;
+    const table = type * 256;
+    for (const byte of Buffer.from(name, 'utf8')) {
+        const c = canonicalByte(byte);
+        a = (crypt[table + c] ^ (a + b)) >>> 0;
         b = (c + a + b + (b << 5) + 3) >>> 0;
     }
     return a;
 }
+const HASH_TABLE_KEY = hash('(hash table)', 3), BLOCK_TABLE_KEY = hash('(block table)', 3);
+// Both path hashes identify a hash slot's name; the locale is separate.
+const pathKey = name => hash(name, 1) + ':' + hash(name, 2);
 
 function transform(input, key, encrypt = false) {
     const bytes = Buffer.from(input);
@@ -123,13 +126,13 @@ export function openMap(input) {
     const hashCount = header.readUInt32LE(24), blockCount = header.readUInt32LE(28);
     // Storm starts probing at hash & (count - 1); other table sizes are unreadable.
     assert(hashCount > 0 && Number.isInteger(Math.log2(hashCount)), 'MPQ hash table size must be a nonzero power of two');
-    function table(field, count, name) {
+    function table(field, count, key) {
         const start = offset + header.readUInt32LE(field);
         assert(start >= offset + 32 && start + count * 16 <= archiveEnd, 'Invalid MPQ table');
-        return transform(bytes.subarray(start, start + count * 16), hash(name, 3));
+        return transform(bytes.subarray(start, start + count * 16), key);
     }
-    const hashTable = table(16, hashCount, '(hash table)');
-    const blockTable = table(20, blockCount, '(block table)');
+    const hashTable = table(16, hashCount, HASH_TABLE_KEY);
+    const blockTable = table(20, blockCount, BLOCK_TABLE_KEY);
     // Tables are immutable for this reader. Index both path hashes once while
     // retaining every matching slot, including distinct locale/alias records.
     const pathSlots = new Map();
@@ -141,8 +144,26 @@ export function openMap(input) {
         else pathSlots.set(key, [p]);
     }
 
+    // Names are resolved repeatedly by each stage; the shared slot arrays are
+    // read-only, like the tables they index.
+    const resolvedSlots = new Map();
     function matchingSlots(name) {
-        return pathSlots.get(hash(name, 1) + ':' + hash(name, 2)) ?? [];
+        let slots = resolvedSlots.get(name);
+        if (slots === undefined) {
+            slots = pathSlots.get(pathKey(name)) ?? [];
+            resolvedSlots.set(name, slots);
+        }
+        return slots;
+    }
+    let references = null;
+    function hashReferences() {
+        if (references) return references;
+        references = new Uint32Array(blockCount);
+        for (let i = 0; i < hashCount; i++) {
+            const index = hashTable.readUInt32LE(i * 16 + 12);
+            if (index < blockCount) references[index]++;
+        }
+        return references;
     }
     function indexOf(name) {
         const matches = matchingSlots(name);
@@ -167,11 +188,7 @@ export function openMap(input) {
     function inspect({ includeHashes = false, includeListedNames = true, names = [] } = {}) {
         assert(typeof includeListedNames === 'boolean', 'includeListedNames must be boolean');
         assert(Array.isArray(names) && names.every(validName), 'Inspection names must be explicit MPQ paths');
-        const references = new Uint32Array(blockCount);
-        for (let i = 0; i < hashCount; i++) {
-            const index = hashTable.readUInt32LE(i * 16 + 12);
-            if (index < blockCount) references[index]++;
-        }
+        const references = hashReferences();
         const result = { formatVersion: 0, archiveOffset: offset, archiveSize: archiveEnd - offset,
             sectorSize, hashCount, blockCount, blocks: Array.from({ length: blockCount }, (_, index) => {
                 const p = index * 16, flags = blockTable.readUInt32LE(p + 12);
@@ -353,16 +370,16 @@ export function openMap(input) {
         const result = Buffer.alloc(offset + size);
         bytes.copy(result, 0, 0, offset + 32);
         for (const entry of live) payload(entry.index).copy(result, offset + placed.readUInt32LE(entry.index * 16));
-        transform(hashes, hash('(hash table)', 3), true).copy(result, offset + hashOffset);
-        transform(placed, hash('(block table)', 3), true).copy(result, offset + blockOffset);
+        transform(hashes, HASH_TABLE_KEY, true).copy(result, offset + hashOffset);
+        transform(placed, BLOCK_TABLE_KEY, true).copy(result, offset + blockOffset);
         result.writeUInt32LE(size, offset + 8);
         result.writeUInt32LE(hashOffset, offset + 16);
         result.writeUInt32LE(blockOffset, offset + 20);
         result.writeUInt32LE(total, offset + 28);
         openMap(result); // Recheck archive/table boundaries after serialization.
         check(sameBytes(result.subarray(0, offset), bytes.subarray(0, offset)), 'MPQ prefix preservation');
-        check(sameBytes(transform(result.subarray(offset + hashOffset, offset + blockOffset), hash('(hash table)', 3)), hashes), 'MPQ hash/locale preservation');
-        const verifiedBlocks = transform(result.subarray(offset + blockOffset), hash('(block table)', 3));
+        check(sameBytes(transform(result.subarray(offset + hashOffset, offset + blockOffset), HASH_TABLE_KEY), hashes), 'MPQ hash/locale preservation');
+        const verifiedBlocks = transform(result.subarray(offset + blockOffset), BLOCK_TABLE_KEY);
         for (let index = 0; index < total; index++) {
             const p = index * 16, flags = blocks.readUInt32LE(p + 12);
             check(sameBytes(verifiedBlocks.subarray(p + 4, p + 16), blocks.subarray(p + 4, p + 16)), () => 'MPQ block metadata preservation: ' + blockLabel(index));
@@ -418,7 +435,7 @@ export function openMap(input) {
         const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
         const zopfli = options.zopfli ?? false;
         assert.equal(typeof zopfli, 'boolean', 'zopfli must be boolean');
-        const encoded = new Map(), metadata = inspect();
+        const encoded = new Map();
         const requested = [...entries];
         assert(requested.every(entry => Array.isArray(entry) && entry.length === 2 && validName(entry[0])), 'Invalid MPQ replacement entries');
         assert.equal(new Set(requested.map(([name]) => canonicalName(name))).size, requested.length, 'Duplicate MPQ paths');
@@ -439,10 +456,7 @@ export function openMap(input) {
         for (const [position, [name]] of [...changes].entries()) {
             const index = indexOf(name), identical = same.get(name), candidate = candidates[position];
             if (identical && candidate.data.length >= blockTable.readUInt32LE(index * 16 + 4)) { changes.delete(name); continue; }
-            if (index >= 0) {
-                const references = metadata.blocks[index].hashReferences;
-                assert.equal(references, 1, 'Aliased entries cannot be replaced independently: ' + name);
-            }
+            if (index >= 0) assert.equal(hashReferences()[index], 1, 'Aliased entries cannot be replaced independently: ' + name);
             encoded.set(name, candidate);
         }
         return commit(changes, encoded, levels, strategies, zopfli);
@@ -451,7 +465,7 @@ export function openMap(input) {
     // the listfile and attributes updates they need, then verify the result.
     function commit(changes, encoded, levels, strategies, zopfli) {
         if (!changes.size) return compact();
-        const metadata = inspect(), additions = [...changes.keys()].filter(name => indexOf(name) < 0);
+        const additions = [...changes.keys()].filter(name => indexOf(name) < 0);
         if (additions.length) {
             const list = changes.get('(listfile)') ?? read('(listfile)');
             assert(list, 'Adding assets requires an existing MPQ listfile');
@@ -474,8 +488,9 @@ export function openMap(input) {
             let index = indexOf(name);
             if (index < 0) {
                 let slot = -1;
+                const home = hash(name, 0);
                 for (let step = 0; step < hashCount; step++) {
-                    const p = ((hash(name, 0) + step) % hashCount) * 16;
+                    const p = ((home + step) % hashCount) * 16;
                     if (hashes.readUInt32LE(p + 12) >= 0xfffffffe) { slot = p; break; }
                 }
                 assert(slot >= 0, 'MPQ hash table is full; cannot add ' + name);
@@ -519,7 +534,7 @@ export function openMap(input) {
         }
         for (const name of changes.keys()) {
             const index = indexOf(name);
-            if (index >= 0) assert.equal(metadata.blocks[index].hashReferences, 1, 'Aliased entries cannot be replaced independently: ' + name);
+            if (index >= 0) assert.equal(hashReferences()[index], 1, 'Aliased entries cannot be replaced independently: ' + name);
         }
         const blocks = Buffer.alloc(nextBlock * 16), packed = new Map();
         blockTable.copy(blocks);
@@ -548,7 +563,7 @@ export function openMap(input) {
         if (!result) {
             // Pinned payloads prevent reclamation: keep the appended layout.
             const hashOffset = cursor - offset, blockOffset = hashOffset + hashes.length;
-            result = Buffer.concat([bytes, ...packed.values(), transform(hashes, hash('(hash table)', 3), true), transform(blocks, hash('(block table)', 3), true)]);
+            result = Buffer.concat([bytes, ...packed.values(), transform(hashes, HASH_TABLE_KEY, true), transform(blocks, BLOCK_TABLE_KEY, true)]);
             result.writeUInt32LE(appendedEnd - offset, offset + 8);
             result.writeUInt32LE(hashOffset, offset + 16);
             result.writeUInt32LE(blockOffset, offset + 20);
@@ -587,8 +602,8 @@ export function openMap(input) {
             // Table sizes are unchanged, so editing their existing positions avoids
             // growing archives whose fixed-key payloads prevent useful compaction.
             output = Buffer.from(bytes);
-            transform(hashes, hash('(hash table)', 3), true).copy(output, offset + header.readUInt32LE(16));
-            transform(blocks, hash('(block table)', 3), true).copy(output, offset + header.readUInt32LE(20));
+            transform(hashes, HASH_TABLE_KEY, true).copy(output, offset + header.readUInt32LE(16));
+            transform(blocks, BLOCK_TABLE_KEY, true).copy(output, offset + header.readUInt32LE(20));
         }
         const deleted = new Set(requested.map(canonicalName));
         const list = deleted.has('(LISTFILE)') ? null : read('(listfile)');
@@ -611,7 +626,7 @@ export function openMap(input) {
         const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
         const zopfli = options.zopfli ?? false;
         assert.equal(typeof zopfli, 'boolean', 'zopfli must be boolean');
-        const candidates = new Map(), metadata = inspect();
+        const candidates = new Map();
         const names = options.names ?? listNames();
         assert(Array.isArray(names) && names.every(name => typeof name === 'string'), 'Invalid MPQ optimization names');
         const seen = new Set();
@@ -620,12 +635,12 @@ export function openMap(input) {
             seen.add(canonicalName(name));
             const matches = matchingSlots(name);
             if (matches.length !== 1 || ['(ATTRIBUTES)', '(SIGNATURE)'].includes(canonicalName(name))) continue;
-            const index = hashTable.readUInt32LE(matches[0] + 12), entry = metadata.blocks[index];
-            if (entry.hashReferences !== 1 || ![0x80000000, 0x80000200].includes(entry.flags)) continue;
+            const index = hashTable.readUInt32LE(matches[0] + 12), flags = blockTable.readUInt32LE(index * 16 + 12);
+            if (hashReferences()[index] !== 1 || (flags !== 0x80000000 && flags !== 0x80000200)) continue;
             const contents = read(name, true);
             if (!contents) continue;
             assert(validName(name), 'Invalid MPQ replacement entries');
-            candidates.set(canonicalName(name) === '(LISTFILE)' ? '(listfile)' : name, { contents, packedSize: entry.packedSize });
+            candidates.set(canonicalName(name) === '(LISTFILE)' ? '(listfile)' : name, { contents, packedSize: blockTable.readUInt32LE(index * 16 + 4) });
         }
         // Each candidate is decoded once and encoded in one batch; only entries
         // whose payload shrinks are written, as replace() with recompress does.
@@ -653,7 +668,7 @@ export function openMap(input) {
         const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
         const zopfli = options.zopfli ?? false;
         assert.equal(typeof zopfli, 'boolean', 'zopfli must be boolean');
-        const size = 512 * 2 ** shift, metadata = inspect(), names = new Map();
+        const size = 512 * 2 ** shift, names = new Map();
         for (const name of [...listNames(), '(listfile)', '(attributes)']) {
             for (const p of matchingSlots(name)) {
                 const index = hashTable.readUInt32LE(p + 12);
@@ -663,7 +678,7 @@ export function openMap(input) {
         const entries = live.map(({ index }) => {
             const flags = blockTable.readUInt32LE(index * 16 + 12), name = names.get(index) ?? null, label = name ?? '#' + index;
             assert.equal(flags & ~0x80030200, 0, 'Unsupported MPQ block flags for a sector size change: ' + label);
-            if (flags & 0x10000) assert(name !== null && metadata.blocks[index].hashReferences === 1, 'An encrypted MPQ block needs exactly one known name for a sector size change: ' + label);
+            if (flags & 0x10000) assert(name !== null && hashReferences()[index] === 1, 'An encrypted MPQ block needs exactly one known name for a sector size change: ' + label);
             return { index, name, flags, contents: readBlock(index, name) };
         });
         const encodings = encodeMany(entries.map(entry => ({ contents: entry.contents, size, keepSectors: Boolean(entry.flags & 0x10000) })), levels, strategies, zopfli);
@@ -692,7 +707,7 @@ export function openMap(input) {
         }
         const hashOffset = cursor, blockOffset = hashOffset + hashTable.length, archiveSize = blockOffset + blocks.length;
         assert(archiveSize <= 0xffffffff, 'MPQ v0 size limit exceeded');
-        chunks.push(transform(hashTable, hash('(hash table)', 3), true), transform(blocks, hash('(block table)', 3), true));
+        chunks.push(transform(hashTable, HASH_TABLE_KEY, true), transform(blocks, BLOCK_TABLE_KEY, true));
         const result = Buffer.concat(chunks);
         result.writeUInt32LE(archiveSize, offset + 8);
         result.writeUInt16LE(shift, offset + 14);
@@ -732,7 +747,7 @@ export function openMap(input) {
             removedSlots.add(p);
             removedIndices.add(hashTable.readUInt32LE(p + 12));
         }
-        const changedKeys = new Set(changedNames.map(name => hash(name, 1) + ':' + hash(name, 2)));
+        const changedKeys = new Set(changedNames.map(pathKey));
         const remaining = new Set();
         for (let p = 0; p < other.hashTable.length; p += 16) {
             const index = other.hashTable.readUInt32LE(p + 12);

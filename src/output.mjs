@@ -17,21 +17,26 @@ export function validateOutputPath(input, output) {
     return { input: source, output: destination };
 }
 
+// Compare an open file with the expected bytes through a bounded buffer. The
+// size is checked before and after reading, so a concurrent append fails too.
+function assertDescriptorContents(descriptor, contents, sizeMessage, contentMessage) {
+    assert.equal(fs.fstatSync(descriptor).size, contents.length, sizeMessage);
+    const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, contents.length)));
+    let position = 0;
+    while (position < contents.length) {
+        const count = fs.readSync(descriptor, chunk, 0, Math.min(chunk.length, contents.length - position), position);
+        assert(count > 0 && chunk.subarray(0, count).equals(contents.subarray(position, position + count)), contentMessage);
+        position += count;
+    }
+    assert.equal(fs.fstatSync(descriptor).size, contents.length, sizeMessage);
+}
+
 export function assertFileUnchanged(file, contents) {
     assert(Buffer.isBuffer(contents), 'Original contents must be a Buffer');
     const descriptor = fs.openSync(file, 'r');
     const message = 'Input changed while processing; output cancelled';
-    try {
-        assert.equal(fs.fstatSync(descriptor).size, contents.length, message);
-        const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, contents.length)));
-        let position = 0;
-        while (position < contents.length) {
-            const count = fs.readSync(descriptor, chunk, 0, Math.min(chunk.length, contents.length - position), position);
-            assert(count > 0 && chunk.subarray(0, count).equals(contents.subarray(position, position + count)), message);
-            position += count;
-        }
-        assert.equal(fs.fstatSync(descriptor).size, contents.length, message);
-    } finally { fs.closeSync(descriptor); }
+    try { assertDescriptorContents(descriptor, contents, message, message); }
+    finally { fs.closeSync(descriptor); }
 }
 
 export function writeNewOutput(destination, contents, { beforePublish = () => {} } = {}) {
@@ -46,17 +51,8 @@ export function writeNewOutput(destination, contents, { beforePublish = () => {}
         try { fs.writeFileSync(descriptor, contents); fs.fsyncSync(descriptor); }
         finally { fs.closeSync(descriptor); }
         const reader = fs.openSync(temporary, 'r');
-        try {
-            assert.equal(fs.fstatSync(reader).size, contents.length, 'Output readback length mismatch');
-            const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, contents.length)));
-            let position = 0;
-            while (position < contents.length) {
-                const count = fs.readSync(reader, chunk, 0, Math.min(chunk.length, contents.length - position), position);
-                assert(count > 0 && chunk.subarray(0, count).equals(contents.subarray(position, position + count)), 'Output readback mismatch');
-                position += count;
-            }
-            assert.equal(fs.fstatSync(reader).size, contents.length, 'Output readback length mismatch');
-        } finally { fs.closeSync(reader); }
+        try { assertDescriptorContents(reader, contents, 'Output readback length mismatch', 'Output readback mismatch'); }
+        finally { fs.closeSync(reader); }
         beforePublish();
         fs.linkSync(temporary, destination);
     } finally {

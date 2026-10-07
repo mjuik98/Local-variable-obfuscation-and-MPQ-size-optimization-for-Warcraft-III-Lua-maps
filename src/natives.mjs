@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import { analyzeGlobalNames, assertLuaResourceLimits, assertRuntimeRewriteSafe, getPreparedLuaAnalysis, isLuaKeyword, parseLua, prepareLua,
     resolveLuaBindings, shortLuaName } from './lua.mjs';
 import { ENGINE_FUNCTIONS } from './engine-names.mjs';
-import { literalString } from './lua-syntax.mjs';
+import { ignoredKeys as ignored, literalString } from './lua-syntax.mjs';
 import { createSeededRandom, validateSeed } from './seed.mjs';
 
-const ignored = new Set(['range', 'loc', 'comments', 'globals']);
 // Lua base functions with fixed behavior. Loaders and memory control stay
 // direct; analysis already refuses loaders.
 const BASE_FUNCTIONS = new Set(['assert', 'error', 'getmetatable', 'ipairs', 'next', 'pairs', 'pcall', 'print', 'rawequal', 'rawget', 'rawlen',
