@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fengari from 'fengari';
-import { parseLua, transformLua } from '../src/lua.mjs';
+import { parseLua, resolveLuaBindings, transformLua } from '../src/lua.mjs';
 
 function runLua(source) {
     const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
@@ -80,7 +80,7 @@ return main()
         const result = transformLua(literal, { renameGlobals: true, keepLocals, keepGlobals: ['Alpha'] });
         assert.deepEqual(runLua(result.code), expected);
         assert(result.code.includes('Alpha') && result.code.includes('Kept') && !result.code.includes('Gamma'));
-        const names = parseLua(result.code).globals.map(node => node.name);
+        const names = [...resolveLuaBindings(parseLua(result.code)).globalNames];
         assert(!names.includes('Beta'));
     }
 });

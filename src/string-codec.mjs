@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createCipheriv, createHash } from 'node:crypto';
-import { createSeededRandom, validateSeed } from './seed.mjs';
+import { createSeededRandom, seededShuffle as shuffle, validateSeed } from './seed.mjs';
 
 // RFC 8439 ChaCha20. Key material is present in the map: this codec hides
 // literals from static inspection, rather than storing a client-side secret.
@@ -50,15 +50,6 @@ function packedWords(bytes) {
 const helperRoles = ['bytes', 'payloads', 'cache', 'quarter', 'qx', 'qa', 'qb', 'qc', 'qd', 'qe', 'qf', 'qg', 'qh',
     'id', 'value', 'data', 'length', 'state', 'work', 'pieces', 'height', 'offset', 'index', 'word', 'text', 'level', 'result'];
 const helperNames = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-
-function shuffle(values, random) {
-    const result = [...values];
-    for (let index = result.length - 1; index > 0; index--) {
-        const other = random() % (index + 1);
-        [result[index], result[other]] = [result[other], result[index]];
-    }
-    return result;
-}
 
 // The helper's local names, independent statement order, quarter-round call
 // order within each round and constant words (written as XOR pairs) vary with

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { assertLuaResourceLimits, assertRuntimeRewriteSafe, assertSourceRewriteSafe, getPreparedLuaAst, isLuaKeyword, parseLua, shortLuaName } from './lua.mjs';
-import { decodeLuaString, ignoredKeys as ignoredAstFields } from './lua-syntax.mjs';
+import { chunkInsertionOffset, decodeLuaString, ignoredKeys as ignoredAstFields } from './lua-syntax.mjs';
 import { buildRuntimeStringHelper, cryptRuntimeString, deriveRuntimeStringKey, runtimeStringNonce } from './string-codec.mjs';
 
 function visit(node, callback) {
@@ -150,11 +150,9 @@ export function transformStrings(code, { enabled = false, mode = 'escape', keep 
     let output = pieces.join(''), helperSource = '';
     if (runtime) {
         helperSource = buildRuntimeStringHelper(runtime.helper, runtime.records, runtime, { preload });
-        const prefix = code.startsWith('#!') ? code.search(/[\r\n]/) : 0;
-        assert(prefix >= 0, 'Runtime helper cannot follow an unterminated shebang');
         // Preserve a shebang as the first line. Normal comments may follow the
         // helper, since source-location observers were rejected above.
-        const insertion = prefix > 0 ? prefix + (code[prefix] === '\r' && code[prefix + 1] === '\n' ? 2 : 1) : 0;
+        const insertion = chunkInsertionOffset(code, 'Runtime helper');
         output = output.slice(0, insertion) + helperSource + output.slice(insertion);
     }
     const result = parseLua(output, 'String output Lua');

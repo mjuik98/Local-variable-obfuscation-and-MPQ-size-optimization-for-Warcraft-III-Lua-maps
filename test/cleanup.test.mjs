@@ -37,6 +37,17 @@ test('explicit dependency contracts permit reviewed dynamic file access only for
     assert.deepEqual(planCleanup(value.map, value.ast, resolveConfig().cleanup, value.context), { names: [], imports: null, blocked: [] }, 'A supplied contract never enables cleanup itself');
 });
 
+test('file APIs read in loop control expressions are globals, not the loop variables', () => {
+    // A for loop's own variable is not in scope in its control expressions,
+    // while a repeat body's local is in scope in its until condition.
+    for (const statement of ['for Preloader = Preloader and 1 or 2, 3 do end', 'for Preloader in Preloader do end']) {
+        const value = fixture(statement);
+        assert.throws(() => planCleanup(value.map, value.ast, options()), /Preloader/, statement);
+    }
+    const local = fixture('repeat local Preloader = 1 until Preloader');
+    assert.deepEqual(planCleanup(local.map, local.ast, options()), { names: CANDIDATES, imports: null, blocked: [] });
+});
+
 test('Preloader refusal explains the desktop contract remedy without allowing unreviewed deletion', () => {
     const value = fixture(), selected = options({ development: false, keepFiles: ['war3map.wct'] });
     assert.throws(() => planCleanup(value.map, value.ast, selected), error => {

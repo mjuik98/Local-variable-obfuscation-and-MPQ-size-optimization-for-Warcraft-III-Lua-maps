@@ -5,7 +5,10 @@ import { ENGINE_GLOBALS } from './engine-names.mjs';
 import { firstCause, ignoredKeys, literalString, loaderRoles, riskCause } from './lua-syntax.mjs';
 import { analyzeClosedTables, analyzeGlobalNames } from './lua-names.mjs';
 
-const parseOptions = {luaVersion: '5.3', scope: true, ranges: true, locations: true, comments: true};
+// luaparse's scope option searches a list of every global name for each
+// global reference, which is quadratic on large map scripts. Bindings and
+// globals are resolved by resolveBindings instead.
+const parseOptions = {luaVersion: '5.3', ranges: true, locations: true, comments: true};
 const keywords = new Set('and break do else elseif end false for function goto if in local nil not or repeat return then true until while'.split(' '));
 const reflectiveNames = new Set(['getlocal', 'setlocal', 'getupvalue', 'setupvalue', 'upvalueid', 'upvaluejoin', 'getinfo']);
 const sourceLocationNames = new Set(['getinfo', 'traceback']);
@@ -740,6 +743,14 @@ export function getPreparedLuaAnalysis(prepared, code) {
 }
 
 export function resolveLuaBindings(ast) { return resolveBindings(ast); }
+
+// Binding resolution cached on a prepared stage, shared with later guards of
+// the same stage instead of resolving its AST again.
+export function getPreparedLuaBindings(prepared, code) {
+    const metadata = stageMetadata(prepared);
+    assert.equal(metadata.code, code, 'Prepared Lua source does not match');
+    return metadata.resolved ??= resolveBindings(metadata.ast);
+}
 
 // The index-th short identifier; callers skip names that are keywords or in use.
 export function shortLuaName(index) { return shortName(index); }
