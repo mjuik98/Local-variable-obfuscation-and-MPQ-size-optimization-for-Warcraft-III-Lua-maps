@@ -204,10 +204,38 @@ test('editor blocking refuses missing trigger files, conflicting cleanup and unv
     assert.throws(() => protectMap(createLuaMap(), { cleanup: { editorBlock: true } }), /requires war3map\.wtg/);
     assert.throws(() => resolveConfig({ cleanup: { editorBlock: true, editor: true } }), /turn off cleanup\.editor/);
     assert.throws(() => resolveConfig({ cleanup: { editorBlock: true, keepFiles: ['War3Map.Wct'] } }), /cannot keep/);
+    assert.equal(resolveConfig({ cleanup: { editorBlock: true, editorBlockFiles: 'wtg', keepFiles: ['war3map.wct'] } }).cleanup.editorBlockFiles, 'wtg');
     assert.throws(() => resolveConfig({ cleanup: { editorBlock: 'yes' } }), /editorBlock must be boolean/);
     const referencing = createLuaMap({ script: 'function config() end\nfunction main() return "war3map.wtg" end\n', extraEntries: triggers });
     assert.throws(() => protectMap(referencing, { cleanup: { editorBlock: true } }), /references cleanup candidate/);
     const preloader = createLuaMap({ script: 'function config() end\nfunction main() Preloader("x") end\n', extraEntries: triggers });
     assert.throws(() => protectMap(preloader, { cleanup: { editorBlock: true } }), /Preloader/);
     assert.throws(() => editorBlockContents('war3map.w3i'), /Not an editor trigger file/);
+});
+
+test('editor blocking formats and target files are explicit and verified in the output', async () => {
+    const { protectMap } = await import('../src/protect.mjs');
+    const { editorBlockContents } = await import('../src/cleanup.mjs');
+    const triggers = [['war3map.wtg', Buffer.from('WTG!\x07\0\0\0triggers')], ['war3map.wct', Buffer.from('custom text')]];
+    const source = createLuaMap({ extraEntries: triggers, mpq: { attributes: true } }), original = openMap(source);
+    assert.deepEqual(editorBlockContents('war3map.wtg', 'truncated'), Buffer.from('WTG!'));
+    assert.deepEqual(editorBlockContents('war3map.wct', 'truncated'), Buffer.alloc(2));
+    assert.deepEqual(editorBlockContents('war3map.wtg', 'empty'), Buffer.alloc(0));
+    assert.deepEqual(editorBlockContents('war3map.wct'), editorBlockContents('war3map.wct', 'version'));
+    assert.throws(() => editorBlockContents('war3map.wtg', 'other'), /Unknown editor block format/);
+    for (const format of ['version', 'truncated', 'empty']) for (const [files, targets] of [['both', ['war3map.wtg', 'war3map.wct']], ['wtg', ['war3map.wtg']], ['wct', ['war3map.wct']]]) {
+        const result = protectMap(source, { cleanup: { editorBlock: true, editorBlockFormat: format, editorBlockFiles: files }, compression: { enabled: false } });
+        const output = openMap(result.bytes);
+        assert.deepEqual(result.summary.editorBlockedFiles, targets);
+        assert.equal(result.summary.editorBlockFormat, format);
+        for (const [name, contents] of triggers) {
+            assert.deepEqual(output.read(name), targets.includes(name) ? editorBlockContents(name, format) : contents, format + ' ' + files + ' ' + name);
+        }
+        assert(original.verifyPreserved(result.bytes, { changedNames: ['war3map.lua', ...targets] }));
+    }
+    const wtgOnly = createLuaMap({ extraEntries: [triggers[0]] });
+    assert.deepEqual(openMap(protectMap(wtgOnly, { cleanup: { editorBlock: true, editorBlockFiles: 'wtg' } }).bytes).read('war3map.wtg'), editorBlockContents('war3map.wtg'));
+    assert.throws(() => protectMap(wtgOnly, { cleanup: { editorBlock: true, editorBlockFiles: 'wct' } }), /requires war3map\.wct/);
+    assert.equal(protectMap(source).summary.editorBlockFormat, undefined, 'Unblocked results name no format');
+    for (const invalid of [{ editorBlockFormat: 'crash' }, { editorBlockFiles: 'all' }]) assert.throws(() => resolveConfig({ cleanup: invalid }), /must be/);
 });

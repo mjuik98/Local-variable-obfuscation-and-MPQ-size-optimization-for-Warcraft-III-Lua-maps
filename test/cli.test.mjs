@@ -430,3 +430,10 @@ test('CLI toggles the experimental all-literal string scope', () => {
     const result = run(['--show-settings', '--preset', 'hardened', '--hide-all-strings'], { stdout: { write() {} }, stderr: { write(text) { throw new Error(text); } } });
     assert.equal(result, 0);
 });
+
+test('CLI selects the editor block format and target files', () => {
+    const parsed = parseArguments(['--show-settings', '--block-editor', '--editor-block-format', 'truncated', '--editor-block-files', 'wct']);
+    assert.deepEqual(parsed.overrides.cleanup, { editorBlock: true, editorBlockFormat: 'truncated', editorBlockFiles: 'wct' });
+    assert.throws(() => parseArguments(['--show-settings', '--editor-block-format', 'empty', '--editor-block-format', 'version']), /Repeated option/);
+    assert.throws(() => parseArguments(['--show-settings', '--editor-block-files']), /Missing value/);
+});

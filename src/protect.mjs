@@ -106,7 +106,8 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     for (const [name, contents] of cleanup.blocked) assert(verified.read(name).equals(contents), 'Editor block readback mismatch: ' + name);
     return {
         bytes: result,
-        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], editorBlockedFiles: cleanup.blocked.map(([name]) => name), mapInfoVersion: info.version,
+        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], editorBlockedFiles: cleanup.blocked.map(([name]) => name),
+            ...(cleanup.blocked.length ? { editorBlockFormat: config.cleanup.editorBlockFormat } : {}), mapInfoVersion: info.version,
             lua: { ...transformed.stats, inputBytes: scriptBytes.length, outputBytes: finalScript.length }, natives: natives.stats, strings: strings.stats, vm: vm.stats,
             sectorSize: verified.inspect().sectorSize, savings: savings.summary(),
             // Compressed bytes depend on the zlib build; record it with the result.

@@ -102,6 +102,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--clean-editor-data` | 참조 검사 후 `war3map.w3r/w3c/w3s`와 `war3map.imp` 정리 |
 | `--remove-listfile` / `--keep-listfile` | 모든 단계가 끝난 뒤 MPQ `(listfile)` 삭제 / 보존 (실험) |
 | `--block-editor` / `--no-block-editor` | 참조 검사 후 `war3map.wtg`·`war3map.wct`를 지원하지 않는 형식으로 대체해 World Editor 열기 차단 시도 / 해제 (실험) |
+| `--editor-block-format ID` / `--editor-block-files ID` | 열기 차단 데이터 형태 `version`·`truncated`·`empty` / 대상 `both`·`wtg`·`wct` (실험) |
 | `--cleanup-contract File.json` | 정확히 일치하는 입력 맵의 의존성 검토 계약 읽기 |
 | `--review-cleanup` | 이전 계약과 두 입력 맵을 비교; 맵 출력 없음 |
 | `--previous-input Map.w3x` | 이전 계약에 정확히 일치하는 검토 원본 |

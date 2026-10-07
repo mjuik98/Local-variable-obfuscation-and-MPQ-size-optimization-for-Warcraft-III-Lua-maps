@@ -16,16 +16,25 @@ const IMPORT_FLAGS = new Set([0, 5, 8, 10, 13]), CUSTOM_IMPORT_FLAGS = new Set([
 export const CLEANUP_CANDIDATES = Object.freeze([...EDITOR_FILES, ...DEVELOPMENT_FILES, ...EDITOR_DATA_FILES]);
 const CANDIDATES = new Set(CLEANUP_CANDIDATES.map(canonicalPath));
 // Experimental editor blocking. Warcraft III never reads the editor trigger
-// files; World Editor needs them to load a map. Each is replaced with a valid
-// file header followed by a format version no editor release writes, so the
-// editor's loader rejects it. The game behaviour of the map is unchanged; an
-// MPQ editor can still remove the files, so this is a deterrent only.
-export function editorBlockContents(name) {
+// files; World Editor needs them to load a map. The selected files are
+// replaced with data the editor's loader cannot use: 'version' keeps the
+// header and writes a format version no editor release writes, 'truncated'
+// ends inside the first field and 'empty' has no bytes. The game behaviour
+// of the map is unchanged; an MPQ editor can still remove the files, so this
+// is a deterrent only.
+export const EDITOR_BLOCK_FORMATS = Object.freeze(['version', 'truncated', 'empty']);
+export const EDITOR_BLOCK_FILES = Object.freeze(['both', 'wtg', 'wct']);
+export function editorBlockContents(name, format = 'version') {
     assert(EDITOR_FILES.some(file => canonicalPath(file) === canonicalPath(name)), 'Not an editor trigger file: ' + name);
+    assert(EDITOR_BLOCK_FORMATS.includes(format), 'Unknown editor block format: ' + format);
+    const triggers = canonicalPath(name) === 'WAR3MAP.WTG';
+    if (format === 'empty') return Buffer.alloc(0);
+    if (format === 'truncated') return triggers ? Buffer.from('WTG!') : Buffer.alloc(2);
     const version = Buffer.alloc(4);
     version.writeUInt32LE(0xffffffff);
-    return canonicalPath(name) === 'WAR3MAP.WTG' ? Buffer.concat([Buffer.from('WTG!'), version]) : version;
+    return triggers ? Buffer.concat([Buffer.from('WTG!'), version]) : version;
 }
+const editorBlockTargets = files => files === 'wtg' ? [EDITOR_FILES[0]] : files === 'wct' ? [EDITOR_FILES[1]] : EDITOR_FILES;
 
 function contractRecord(value, keys, label) {
     assert(value !== null && typeof value === 'object' && !Array.isArray(value), label + ' must be an object');
@@ -150,8 +159,9 @@ export function planCleanup(map, ast, options, context = {}) {
         .filter(name => !keep.has(canonicalPath(name)) && map.has(name));
     // Blocking rewrites the existing trigger files and never adds files. The
     // script must not reference either name, as for deletion.
-    if (options.editorBlock) for (const name of EDITOR_FILES) assert(map.has(name), 'Editor blocking requires ' + name + ' in the input map');
-    const blocked = options.editorBlock ? EDITOR_FILES.map(name => [name, editorBlockContents(name)]) : [];
+    const blockTargets = options.editorBlock ? editorBlockTargets(options.editorBlockFiles ?? 'both') : [];
+    for (const name of blockTargets) assert(map.has(name), 'Editor blocking requires ' + name + ' in the input map');
+    const blocked = blockTargets.map(name => [name, editorBlockContents(name, options.editorBlockFormat ?? 'version')]);
     const targets = [...names, ...blocked.map(([name]) => name)];
     if (!targets.length) return { names, imports: null, blocked };
     if (reviewed) {

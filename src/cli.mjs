@@ -48,6 +48,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --keep-listfile         Keep the MPQ (listfile)
 --block-editor          Replace the editor trigger files with unsupported data (experimental)
 --no-block-editor       Keep the editor trigger files readable
+--editor-block-format <id> version, truncated or empty data for editor blocking (default: version)
+--editor-block-files <id> both, wtg or wct editor files to block (default: both)
 --cleanup-contract <file.json> Use a reviewed cleanup contract tied to the exact input
 --review-cleanup        Compare the previous reviewed map with this input; write no map
 --previous-input <map>  Previous input matched by --cleanup-contract
@@ -116,6 +118,8 @@ export function parseArguments(args) {
         } else if (argument === '--block-editor' || argument === '--no-block-editor') {
             assert(!seen.has(argument === '--block-editor' ? '--no-block-editor' : '--block-editor'), '--block-editor conflicts with --no-block-editor');
             unique(argument); parsed.overrides.cleanup.editorBlock = argument === '--block-editor';
+        } else if (argument === '--editor-block-format' || argument === '--editor-block-files') {
+            unique(argument); parsed.overrides.cleanup[argument === '--editor-block-format' ? 'editorBlockFormat' : 'editorBlockFiles'] = value();
         } else if (argument === '--zopfli' || argument === '--no-zopfli') {
             assert(!seen.has(argument === '--zopfli' ? '--no-zopfli' : '--zopfli'), '--zopfli conflicts with --no-zopfli');
             unique(argument); parsed.overrides.compression.zopfli = argument === '--zopfli';
@@ -176,7 +180,7 @@ export function run(args, { stdout = process.stdout, stderr = process.stderr } =
             return 0;
         }
         stdout.write((options.check ? 'Checked in memory' : 'Protected map saved') + ': ' + result.path + '\n');
-        stdout.write('Map bytes: ' + result.summary.inputBytes + ' -> ' + result.summary.outputBytes + '; local names changed: ' + result.summary.lua.renamedLocals + '; strings hidden: ' + result.summary.strings.encodedLiterals + '; string mode: ' + (result.summary.strings.mode ?? result.config.strings.mode) + '; VM functions: ' + (result.summary.vm?.virtualizedFunctions ?? 0) + '; files removed: ' + result.summary.removedFiles.length + '; editor-blocked files: ' + result.summary.editorBlockedFiles.length + '\n');
+        stdout.write('Map bytes: ' + result.summary.inputBytes + ' -> ' + result.summary.outputBytes + '; local names changed: ' + result.summary.lua.renamedLocals + '; strings hidden: ' + result.summary.strings.encodedLiterals + '; string mode: ' + (result.summary.strings.mode ?? result.config.strings.mode) + '; VM functions: ' + (result.summary.vm?.virtualizedFunctions ?? 0) + '; files removed: ' + result.summary.removedFiles.length + '; editor-blocked files: ' + result.summary.editorBlockedFiles.length + (result.summary.editorBlockFormat ? ' (' + result.summary.editorBlockFormat + ': ' + result.summary.editorBlockedFiles.join(', ') + ')' : '') + '\n');
         const lua = result.summary.lua;
         stdout.write('Global names changed: ' + (lua.renamedGlobals ?? 0) + '; fields changed: ' + (lua.renamedFields ?? 0) + ' in ' + (lua.closedTables ?? 0) +
             ' closed tables; engine functions hidden: ' + (result.summary.natives?.hiddenNatives ?? 0) + '; Lua library functions hidden: ' + (result.summary.natives?.hiddenLibraryFunctions ?? 0) + '; FourCC folded: ' + (result.summary.natives?.foldedFourCC ?? 0) + '; MPQ sector size: ' + result.summary.sectorSize + '\n');
