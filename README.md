@@ -145,7 +145,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --check --details --compression-strategy 
 ## 상세 문서
 
 - [Lua 보호 옵션](docs/protection.md): 문자열 숨김(escape·runtime), seed 이름, 선택적 함수 VM, 전역·닫힌 테이블 필드 이름 변경, 엔진·라이브러리 함수 숨김, `FourCC` 치환과 LoTKT 2.4E 측정 결과
-- [MPQ 구조 옵션](docs/archive.md): sector 크기 변경과 `(listfile)` 삭제
+- [MPQ 구조 옵션](docs/archive.md): sector 크기 변경, `(listfile)` 삭제, 병렬 섹터 압축의 메모리와 대기 동작
 - [파일 정리와 검토 계약](docs/cleanup.md): 에디터·개발·에디터 데이터 정리, 검토 계약 작성·재검토와 LoTKT 계약 파일
 - [게임 검증 기록과 체크리스트](docs/verification.md): 실제 Warcraft III에서 확인한 결과와 남은 확인 항목
 
