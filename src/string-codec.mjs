@@ -64,12 +64,17 @@ function shuffle(values, random) {
 // order within each round and constant words (written as XOR pairs) vary with
 // the key material, so the generated code has no fixed textual signature.
 // The decoded bytes do not depend on these choices.
-export function buildRuntimeStringHelper(helper, records, { key, noncePrefix }) {
+export function buildRuntimeStringHelper(helper, records, { key, noncePrefix }, { preload = false } = {}) {
     assert(/^[A-Za-z_][A-Za-z0-9_]*$/.test(helper), 'Invalid runtime string helper identifier');
+    assert.equal(typeof preload, 'boolean', 'preload must be boolean');
     assert(Buffer.isBuffer(key) && key.length === 32 && Buffer.isBuffer(noncePrefix) && noncePrefix.length === 8,
         'Invalid runtime string key material');
     const random = createSeededRandom(createHash('sha256').update('WarcraftLuaProtector/runtime-helper-shape\0').update(key).update(noncePrefix).digest('hex'));
-    const names = Object.fromEntries(shuffle(helperNames, random).slice(0, helperRoles.length).map((name, index) => [helperRoles[index], name]));
+    const shuffled = shuffle(helperNames, random);
+    const names = Object.fromEntries(shuffled.slice(0, helperRoles.length).map((name, index) => [helperRoles[index], name]));
+    // Preloading needs two more names; taking unused shuffled letters keeps
+    // every other choice, and the default helper, unchanged.
+    const [F, K] = shuffled.slice(helperRoles.length, helperRoles.length + 2);
     const { bytes: B, payloads: P, cache: C, quarter: Q, qx, qa, qb, qc, qd, qe, qf, qg, qh,
         id: I, value: V, data: D, length: N, state: Z, work: X, pieces: O, height: H, offset: A, index: J, word: W, text: T, level: U, result: R } = names;
     const masked = word => {
@@ -99,13 +104,17 @@ export function buildRuntimeStringHelper(helper, records, { key, noncePrefix }) 
     // Four cipher bytes occupy one number slot. Decode only on first use,
     // combine four-byte pieces through a balanced tree, then release the
     // ciphertext table. There are no global/library/native/RNG dependencies.
-    return 'local ' + helper + '=(function()' + declarations +
-        `return function(${I})local ${V}=${C}[${I}];if ${V}~=nil then return ${V} end;local ${D}=${P}[${I}];local ${N}=${D}[1];` +
+    const decoder =
+        `function(${I})local ${V}=${C}[${I}];if ${V}~=nil then return ${V} end;local ${D}=${P}[${I}];local ${N}=${D}[1];` +
         `local ${Z}={${initial}};for ${J}=1,16 do ${Z}[${J}]=${Z}[${J}]&0xffffffff end;local ${X}={};local ${O}={};local ${H}=0;local ${A}=0;` +
         `while ${A}<${N} do for ${J}=1,16 do ${X}[${J}]=${Z}[${J}] end;for ${J}=1,10 do ${columns}${diagonals} end;` +
         `for ${J}=1,16 do if ${A}<${N} then local ${W}=${D}[${A}//4+2]~((${X}[${J}]+${Z}[${J}])&0xffffffff);local ${T}=${B}[(${W}&255)+1];` +
         `if ${A}+1<${N} then ${T}=${T}..${B}[((${W}>>8)&255)+1] end;if ${A}+2<${N} then ${T}=${T}..${B}[((${W}>>16)&255)+1] end;` +
         `if ${A}+3<${N} then ${T}=${T}..${B}[((${W}>>24)&255)+1] end;local ${U}=1;while ${O}[${U}]~=nil do ${T}=${O}[${U}]..${T};${O}[${U}]=nil;${U}=${U}+1 end;` +
         `${O}[${U}]=${T};if ${U}>${H} then ${H}=${U} end;${A}=${A}+4 end end;${Z}[13]=(${Z}[13]+1)&0xffffffff end;` +
-        `local ${R}="";for ${J}=${H},1,-1 do if ${O}[${J}]~=nil then ${R}=${R}..${O}[${J}] end end;${C}[${I}]=${R};${P}[${I}]=nil;return ${R} end end)();\n`;
+        `local ${R}="";for ${J}=${H},1,-1 do if ${O}[${J}]~=nil then ${R}=${R}..${O}[${J}] end end;${C}[${I}]=${R};${P}[${I}]=nil;return ${R} end`;
+    // Optionally decode every literal while the chunk loads, before config or
+    // main runs, so no first use during play pays for decryption.
+    const result = preload ? 'local ' + F + '=' + decoder + ';for ' + K + '=1,' + records.length + ' do ' + F + '(' + K + ') end;return ' + F : 'return ' + decoder;
+    return 'local ' + helper + '=(function()' + declarations + result + ' end)();\n';
 }

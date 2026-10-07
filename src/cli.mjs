@@ -38,6 +38,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --no-hide-strings       Disable string encoding set in configuration
 --hide-all-strings      Widen runtime string hiding to rawcodes, orders, callbacks, paths and formats (experimental)
 --no-hide-all-strings   Keep the default runtime string scope
+--preload-strings       Decode every runtime string while the map loads instead of on first use (experimental)
+--no-preload-strings    Decode runtime strings on first use
 --keep-string <value>   Preserve a decoded string value (repeatable)
 --keep-string=<value>   Preserve any value, including empty or -- prefixed strings
 --no-cleanup            Preserve editor and development files
@@ -136,6 +138,9 @@ export function parseArguments(args) {
         } else if (argument === '--hide-all-strings' || argument === '--no-hide-all-strings') {
             assert(!seen.has(argument === '--hide-all-strings' ? '--no-hide-all-strings' : '--hide-all-strings'), '--hide-all-strings conflicts with --no-hide-all-strings');
             unique(argument); parsed.overrides.strings.allLiterals = argument === '--hide-all-strings';
+        } else if (argument === '--preload-strings' || argument === '--no-preload-strings') {
+            assert(!seen.has(argument === '--preload-strings' ? '--no-preload-strings' : '--preload-strings'), '--preload-strings conflicts with --no-preload-strings');
+            unique(argument); parsed.overrides.strings.preload = argument === '--preload-strings';
         } else if (argument === '--hide-strings' || argument === '--no-hide-strings') {
             unique(argument); parsed.overrides.strings.enabled = argument === '--hide-strings';
         } else if (argument.startsWith('--keep-string=')) {
@@ -155,6 +160,7 @@ export function parseArguments(args) {
     // Escape mode cannot keep a preset's all-literal scope; an explicit
     // --hide-all-strings still reports the conflict.
     if (parsed.overrides.strings.mode === 'escape' && !seen.has('--hide-all-strings')) parsed.overrides.strings.allLiterals = false;
+    if (parsed.overrides.strings.mode === 'escape' && !seen.has('--preload-strings')) parsed.overrides.strings.preload = false;
     if (!parsed.help) {
         if (parsed.showSettings) {
             assert(!parsed.input && !parsed.output && !parsed.check && !parsed.compare && !parsed.details && !parsed.reviewCleanup && !parsed.previousInput && !parsed.contractOutput && !parsed.cleanupContractPath, '--show-settings accepts only preset and transformation settings');

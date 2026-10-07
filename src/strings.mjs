@@ -93,10 +93,11 @@ function runtimeRecord(runtime, bytes) {
 
 // Forced literal offsets name tool-generated literals (native names) that are
 // encrypted in runtime mode even though they look like identifiers.
-export function transformStrings(code, { enabled = false, mode = 'escape', keep = [], allLiterals = false } = {}, {prepared, seed = 'warcraft-lua-protector', forced = []} = {}) {
+export function transformStrings(code, { enabled = false, mode = 'escape', keep = [], allLiterals = false, preload = false } = {}, {prepared, seed = 'warcraft-lua-protector', forced = []} = {}) {
     assert(typeof enabled === 'boolean', 'strings.enabled must be boolean');
     assert(mode === 'escape' || mode === 'runtime', 'strings.mode must be escape or runtime');
     assert(typeof allLiterals === 'boolean' && (!enabled || !allLiterals || mode === 'runtime'), 'strings.allLiterals must be boolean and requires runtime mode');
+    assert(typeof preload === 'boolean' && (!enabled || !preload || mode === 'runtime'), 'strings.preload must be boolean and requires runtime mode');
     assert(Array.isArray(keep) && keep.every(value => typeof value === 'string' && value.isWellFormed()), 'strings.keep must contain well-formed Unicode strings');
     assert(Array.isArray(forced) && forced.every(Number.isInteger), 'Forced string literals must be source offsets');
     if (!enabled) return { code, stats: { inputBytes: Buffer.byteLength(code), outputBytes: Buffer.byteLength(code), encodedLiterals: 0 } };
@@ -148,7 +149,7 @@ export function transformStrings(code, { enabled = false, mode = 'escape', keep 
     pieces.push(code.slice(cursor));
     let output = pieces.join(''), helperSource = '';
     if (runtime) {
-        helperSource = buildRuntimeStringHelper(runtime.helper, runtime.records, runtime);
+        helperSource = buildRuntimeStringHelper(runtime.helper, runtime.records, runtime, { preload });
         const prefix = code.startsWith('#!') ? code.search(/[\r\n]/) : 0;
         assert(prefix >= 0, 'Runtime helper cannot follow an unterminated shebang');
         // Preserve a shebang as the first line. Normal comments may follow the
@@ -169,5 +170,5 @@ export function transformStrings(code, { enabled = false, mode = 'escape', keep 
     } else verifySame(ast, result, values);
     return { code: output, stats: { inputBytes: Buffer.byteLength(code), outputBytes: Buffer.byteLength(output), encodedLiterals: edits.length,
         ...(runtime ? { mode: 'runtime', uniqueRuntimeLiterals: runtime.records.length,
-            runtimeCipherBytes: runtime.records.reduce((sum, record) => sum + record.cipher.length, 0), runtimeHelperBytes: Buffer.byteLength(helperSource) } : {}) } };
+            runtimeCipherBytes: runtime.records.reduce((sum, record) => sum + record.cipher.length, 0), runtimeHelperBytes: Buffer.byteLength(helperSource), ...(preload ? { preloaded: true } : {}) } : {}) } };
 }

@@ -408,3 +408,15 @@ end
     const standard = protectMap(createLuaMap({ script }), resolveSettings({ preset: 'maximum', overrides: { strings: { allLiterals: false }, lua: { foldFourCC: false } } }).config);
     assert(result.summary.strings.encodedLiterals > standard.summary.strings.encodedLiterals, 'The experimental scope hides more literals');
 });
+
+test('the maximum preset with preloaded strings compiles and keeps results', async () => {
+    const { resolveSettings } = await import('../src/presets.mjs');
+    const script = 'function config() end\nfunction main() local text = "preloaded message" return text, "second literal" end\n';
+    const { config } = resolveSettings({ preset: 'maximum', overrides: { strings: { preload: true } } });
+    const result = protectMap(createLuaMap({ script }), config);
+    assert.equal(result.summary.strings.preloaded, true);
+    assert.deepEqual(luaResultBytes(openMap(result.bytes).read('war3map.lua').toString()), luaResultBytes(script));
+    assert.equal(resolveConfig().strings.preload, false);
+    assert.throws(() => resolveConfig({ strings: { enabled: true, preload: true } }), /strings\.preload requires strings\.mode runtime/);
+    assert.throws(() => resolveConfig({ strings: { preload: 1 } }), /must be boolean/);
+});
