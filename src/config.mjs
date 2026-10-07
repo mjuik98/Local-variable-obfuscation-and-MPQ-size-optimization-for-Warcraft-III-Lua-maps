@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     lua: Object.freeze({ minify: true, renameLocals: true, keepLocals: Object.freeze([]), nameMode: 'compact', seed: 'warcraft-lua-protector', vmFunctions: Object.freeze([]),
         renameGlobals: false, renameFields: false, keepGlobals: Object.freeze([]), hideNatives: false, foldFourCC: false }),
     strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape', allLiterals: false }),
-    cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', keepFiles: Object.freeze([]) }),
+    cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', editorBlockAcceptDynamic: false, keepFiles: Object.freeze([]) }),
     compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false }),
 });
 
@@ -45,7 +45,7 @@ export function resolveConfig(input = {}) {
         assert(Object.keys(supplied).every(key => Object.hasOwn(defaults, key)), 'Unknown ' + section + ' option');
         result[section] = { ...defaults, ...supplied };
     }
-    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock']], ['compression', ['enabled', 'zopfli']]]) {
+    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock', 'editorBlockAcceptDynamic']], ['compression', ['enabled', 'zopfli']]]) {
         for (const key of keys) assert(typeof result[section][key] === 'boolean', section + '.' + key + ' must be boolean');
     }
     result.lua.keepLocals = names(result.lua.keepLocals, 'lua.keepLocals', true);

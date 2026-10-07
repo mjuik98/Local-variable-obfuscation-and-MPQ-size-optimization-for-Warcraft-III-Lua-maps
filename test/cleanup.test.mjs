@@ -243,3 +243,23 @@ test('editor blocking formats and target files are explicit and verified in the 
     assert.equal(protectMap(source).summary.editorBlockFormat, undefined, 'Unblocked results name no format');
     for (const invalid of [{ editorBlockFormat: 'crash' }, { editorBlockFiles: 'all' }]) assert.throws(() => resolveConfig({ cleanup: invalid }), /must be/);
 });
+
+test('explicitly accepted dynamic access permits editor blocking only, without a contract', async () => {
+    const { protectMap } = await import('../src/protect.mjs');
+    const { editorBlockContents } = await import('../src/cleanup.mjs');
+    const triggers = [['war3map.wtg', Buffer.from('triggers')], ['war3map.wct', Buffer.from('text')]];
+    const dynamic = statement => createLuaMap({ script: 'function config() end\nfunction main() ' + statement + ' end\n', extraEntries: triggers });
+    const preloader = dynamic('Preloader(savePath); local native = _G[nativeName]');
+    assert.throws(() => protectMap(preloader, { cleanup: { editorBlock: true } }), /Preloader/, 'Dynamic access still needs a contract by default');
+    const accepted = protectMap(preloader, { cleanup: { editorBlock: true, editorBlockAcceptDynamic: true } });
+    assert.deepEqual(openMap(accepted.bytes).read('war3map.wtg'), editorBlockContents('war3map.wtg'));
+    assert.deepEqual(accepted.summary.editorBlockedFiles, ['war3map.wtg', 'war3map.wct']);
+    // The statement covers rewritten trigger files only: deletions keep their contract.
+    const withDeletion = createLuaMap({ script: 'function config() end\nfunction main() Preloader(savePath) end\n', extraEntries: [...triggers, ['lotkt-object-history.json', Buffer.from('{}')]] });
+    assert.throws(() => protectMap(withDeletion, { cleanup: { editorBlock: true, editorBlockAcceptDynamic: true, development: true } }), /Preloader/);
+    for (const statement of ['local f = load(code)', 'local f = _G.loadfile', 'return "war3map.wtg"', 'local d = debug.getinfo(1)']) {
+        assert.throws(() => protectMap(dynamic(statement), { cleanup: { editorBlock: true, editorBlockAcceptDynamic: true } }), /cannot permit|cannot prove|references cleanup candidate|Lua runtime rewriting|introspection/, statement);
+    }
+    assert.equal(resolveConfig().cleanup.editorBlockAcceptDynamic, false);
+    assert.throws(() => resolveConfig({ cleanup: { editorBlockAcceptDynamic: 'yes' } }), /must be boolean/);
+});

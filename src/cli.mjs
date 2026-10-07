@@ -50,6 +50,7 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --no-block-editor       Keep the editor trigger files readable
 --editor-block-format <id> empty, version or truncated data for editor blocking (default: empty)
 --editor-block-files <id> both, wtg or wct editor files to block (default: both)
+--block-editor-accept-dynamic Allow editor blocking without a contract despite dynamic Preloader paths or _G lookups; you confirm they never read the trigger files (experimental)
 --cleanup-contract <file.json> Use a reviewed cleanup contract tied to the exact input
 --review-cleanup        Compare the previous reviewed map with this input; write no map
 --previous-input <map>  Previous input matched by --cleanup-contract
@@ -118,6 +119,8 @@ export function parseArguments(args) {
         } else if (argument === '--block-editor' || argument === '--no-block-editor') {
             assert(!seen.has(argument === '--block-editor' ? '--no-block-editor' : '--block-editor'), '--block-editor conflicts with --no-block-editor');
             unique(argument); parsed.overrides.cleanup.editorBlock = argument === '--block-editor';
+        } else if (argument === '--block-editor-accept-dynamic') {
+            unique(argument); parsed.overrides.cleanup.editorBlockAcceptDynamic = true;
         } else if (argument === '--editor-block-format' || argument === '--editor-block-files') {
             unique(argument); parsed.overrides.cleanup[argument === '--editor-block-format' ? 'editorBlockFormat' : 'editorBlockFiles'] = value();
         } else if (argument === '--zopfli' || argument === '--no-zopfli') {
@@ -141,7 +144,7 @@ export function parseArguments(args) {
             parsed.input = argument;
         }
     }
-    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data') || seen.has('--block-editor'))), '--no-cleanup conflicts with cleanup options');
+    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data') || seen.has('--block-editor') || seen.has('--block-editor-accept-dynamic'))), '--no-cleanup conflicts with cleanup options');
     assert(!(seen.has('--hide-strings') && seen.has('--no-hide-strings')), '--hide-strings conflicts with --no-hide-strings');
     assert(!(seen.has('--string-mode') && seen.has('--no-runtime-strings')), '--string-mode conflicts with --no-runtime-strings');
     if (!parsed.help) {

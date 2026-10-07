@@ -170,7 +170,13 @@ export function planCleanup(map, ast, options, context = {}) {
         for (const name of names) assert(reviewed.has(canonicalPath(name)), 'Cleanup contract does not review selected candidate ' + name);
         for (const [name] of blocked) assert(reviewed.has(canonicalPath(name)), 'Cleanup contract does not review editor-blocked file ' + name);
     }
-    validateReferences(ast, targets, reviewed !== null);
+    // A contract reviews dynamic file access for every target. Without one,
+    // editorBlockAcceptDynamic is the user's own statement that dynamic
+    // Preloader paths and environment lookups never read the trigger files;
+    // it covers the rewritten trigger files only, never deletions. External
+    // loaders, reflection APIs and explicit name references stay refused.
+    if (names.length) validateReferences(ast, names, reviewed !== null);
+    if (blocked.length) validateReferences(ast, blocked.map(([name]) => name), reviewed !== null || options.editorBlockAcceptDynamic === true);
     if (!names.length) return { names, imports: null, blocked };
     // A removed manifest needs no row updates.
     if (names.some(name => canonicalPath(name) === 'WAR3MAP.IMP')) return { names, imports: null, blocked };

@@ -437,3 +437,8 @@ test('CLI selects the editor block format and target files', () => {
     assert.throws(() => parseArguments(['--show-settings', '--editor-block-format', 'empty', '--editor-block-format', 'version']), /Repeated option/);
     assert.throws(() => parseArguments(['--show-settings', '--editor-block-files']), /Missing value/);
 });
+
+test('CLI accepts dynamic access for editor blocking only when stated explicitly', () => {
+    assert.equal(parseArguments(['--show-settings', '--block-editor', '--block-editor-accept-dynamic']).overrides.cleanup.editorBlockAcceptDynamic, true);
+    assert.throws(() => parseArguments(['--show-settings', '--block-editor-accept-dynamic', '--no-cleanup']), /conflicts/);
+});

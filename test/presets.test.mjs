@@ -47,7 +47,7 @@ test('each preset applies its intended source preservation, compression and clea
         assert.equal(config.lua.minify, false);
         assert.equal(config.lua.renameLocals, false);
         assert.equal(config.strings.enabled, false);
-        assert.deepEqual(config.cleanup, { editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', keepFiles: [] });
+        assert.deepEqual(config.cleanup, { editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', editorBlockAcceptDynamic: false, keepFiles: [] });
         assert.equal(config.compression.enabled, true);
     }
     assert.deepEqual(fast.config.compression.levels, [6]);
@@ -141,4 +141,11 @@ test('caller settings, returned arrays and public metadata cannot alter future p
     assert.deepEqual(next.config.compression.levels, [6, 9]);
     assert.equal(next.preset.label, '용량 최적화');
     assert.equal(listPresets()[0].id, 'fast-check');
+});
+
+test('a distribution preset needs no contract for editor blocking with accepted dynamic access only', () => {
+    const settings = resolveSettings({ preset: 'distribution', overrides: { cleanup: { editor: false, development: false, editorBlock: true, editorBlockAcceptDynamic: true } } });
+    assert.equal(settings.preset.requiresCleanupContract, false);
+    const reviewed = resolveSettings({ preset: 'distribution', overrides: { cleanup: { editor: false, development: false, editorBlock: true } } });
+    assert.equal(reviewed.preset.requiresCleanupContract, true);
 });
