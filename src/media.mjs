@@ -18,6 +18,13 @@ function stripWav(bytes) {
         const id = bytes.toString('latin1', cursor, cursor + 4), size = bytes.readUInt32LE(cursor + 4);
         const end = cursor + 8 + size + (size & 1);
         if (end > bytes.length) return null;
+        if (id === 'fmt ') {
+            if (format || data || size < 16) return null;
+            // The base format is 16 bytes; an extended format adds cbSize and
+            // the indicated bytes. Do not strip a truncated format description.
+            if (size !== 16 && (size < 18 || 18 + bytes.readUInt16LE(cursor + 24) > size)) return null;
+        }
+        if (id === 'data' && !format) return null;
         const metadata = WAV_METADATA.has(id) || (id === 'LIST' && size >= 4 && bytes.toString('latin1', cursor + 8, cursor + 12) === 'INFO');
         if (metadata) removed = true;
         else {
@@ -62,9 +69,20 @@ function mpegFrameLength(bytes, offset) {
 function stripMp3(bytes) {
     let start = 0, end = bytes.length;
     if (bytes.length >= 10 && bytes.toString('latin1', 0, 3) === 'ID3') {
+        const version = bytes[3], flags = bytes[5];
+        // Only known ID3v2 layouts define these lengths and flag meanings.
+        const allowed = version === 2 ? 0xc0 : version === 3 ? 0xe0 : version === 4 ? 0xf0 : 0;
+        if (!allowed || bytes[4] === 0xff || (flags & ~allowed)) return null;
         const size = bytes.subarray(6, 10);
         if (size.some(byte => byte & 0x80)) return null;
-        start = 10 + ((size[0] << 21) | (size[1] << 14) | (size[2] << 7) | size[3]) + (bytes[5] & 0x10 ? 10 : 0);
+        const tagEnd = 10 + ((size[0] << 21) | (size[1] << 14) | (size[2] << 7) | size[3]);
+        const footer = version === 4 && (flags & 0x10);
+        start = tagEnd + (footer ? 10 : 0);
+        if (start > end) return null;
+        // A footer repeats the header after its reversed identifier. Guessing
+        // its size could otherwise delete ten bytes of sound data.
+        if (footer && (bytes.toString('latin1', tagEnd, tagEnd + 3) !== '3DI' ||
+            !bytes.subarray(tagEnd + 3, start).equals(bytes.subarray(3, 10)))) return null;
     }
     if (end - start >= 128 && bytes.toString('latin1', end - 128, end - 125) === 'TAG') end -= 128;
     if (start === 0 && end === bytes.length) return null;

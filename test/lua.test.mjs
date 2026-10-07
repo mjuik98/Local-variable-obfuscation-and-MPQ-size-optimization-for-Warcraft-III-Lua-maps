@@ -167,6 +167,76 @@ test('finds reflection in loaded source, aliases, concatenation and nested liter
     assert.deepEqual(runLua(transformLua(harmless).code), runLua(harmless));
 });
 
+test('assert forwarding and expanded assignments preserve loader and environment refusal boundaries', () => {
+    for (const declaration of [
+        'local flag, compile = assert(true, load)',
+        'local flag, compile; flag, compile = assert(true, load)',
+        'local flag, ignored, compile = assert(true, false, load)',
+        'local flag, compile = assert(assert(true, load))',
+        'local flag, env = assert(true, _G); local compile = env.load',
+    ]) {
+        const source = 'local observed = 7; ' + declaration +
+            '; local inspect = compile("return debug.getlocal(2, 1)"); local name, value = inspect(); return name, value';
+        assert.deepEqual(runLua(source), [{bytes: Buffer.from('observed').toString('hex')}, 7]);
+        assert.throws(() => transformLua(source), /introspection/, declaration);
+        assert.throws(() => assertRuntimeRewriteSafe(parseLua(source)), /introspection/, declaration);
+        assert.equal(transformLua(source, {minify: false, renameLocals: false}).code, source);
+    }
+    for (const forwarding of [
+        'local function forward() return assert(true, load) end',
+        'local function forward() return assert(true, _G) end',
+        'ForwardedFlag, ForwardedLoader = assert(true, load)',
+        'local holder = {}; holder.flag, holder.loader = assert(true, load)',
+        'local holder = {}; holder.flag, holder.environment = assert(true, _G)',
+        'local flag, compile = pcall(assert, true, load)',
+        'local flag, compile = xpcall(assert, function(error) return error end, true, load)',
+        'consume(assert(true, load))',
+    ]) {
+        const source = 'local observed = 7; ' + forwarding + '; return observed';
+        assert.throws(() => transformLua(source), /opaque loaded code/, forwarding);
+        assert.throws(() => assertSourceRewriteSafe(parseLua(source)), /opaque loaded code/, forwarding);
+        assert.equal(transformLua(source, {minify: false, renameLocals: false}).code, source);
+    }
+    for (const source of [
+        'local first, second = assert(true, 7); return first, second',
+        'local flag, compile = assert(true, load); local run = compile("return 7"); return run()',
+        'local flag, value = pcall(load, "return 7"); return flag, value()',
+    ]) assert.deepEqual(runLua(transformLua(source).code), runLua(source));
+});
+
+test('built-in safety exceptions require an unmodified unambiguous callee', () => {
+    for (const forwarding of [
+        'function assert(value) consume(value); return true end; assert(load)',
+        'assert = function(value) consume(value); return true end; assert(load)',
+        '_G.assert = function(value) consume(value); return true end; assert(load)',
+        'local env = _G; function env.assert(value) consume(value); return true end; assert(load)',
+        'function _G.assert(value) consume(value); return true end; assert(load)',
+        'local pass = assert; function pass(value) consume(value) end; pass(load)',
+        'local pass = rawget; function pass(value) consume(value) end; pass(_G, "native")',
+        'local tools = {pass = assert}; function tools.pass(value) consume(value) end; tools.pass(load)',
+        'local tools = {pass = assert}; tools[GetName()] = function(value) consume(value) end; tools.pass(load)',
+        'function rawget(value, key) consume(value); return nil end; rawget(_G, "native")',
+        'local env = _G; env["raw" .. "get"] = function(value) consume(value) end; rawget(_G, "native")',
+        'function pcall(target, source) consume(target); return false end; pcall(load, "return 7")',
+        'function xpcall(target, handler, source) consume(target); return false end; xpcall(load, function(error) return error end, "return 7")',
+        '_G[GetName()] = function() end; rawget(_G, "native")',
+        'local condition = true; local pass = condition and assert or rawget; pass(load)',
+        'local condition = true; local pass = condition and assert or consume; pass(load)',
+    ]) {
+        const source = 'local observed = 7; ' + forwarding + '; return observed';
+        assert.throws(() => transformLua(source), /opaque loaded code/, forwarding);
+        assert.throws(() => assertRuntimeRewriteSafe(parseLua(source)), /opaque loaded code/, forwarding);
+        assert.equal(transformLua(source, {minify: false, renameLocals: false}).code, source);
+    }
+    for (const source of [
+        'local check = assert; local compile = check(load); return compile("return 7")()',
+        'local protected = pcall; local ok, run = protected(load, "return 7"); return ok, run()',
+        'local protected = xpcall; local ok, run = protected(load, function(error) return error end, "return 7"); return ok, run()',
+        'local get = rawget; local native = get(_G, "tonumber"); return native("7")',
+        'local tools = {check = assert}; local compile = tools.check(load); return compile("return 7")()',
+    ]) assert.deepEqual(runLua(transformLua(source).code), runLua(source));
+});
+
 test('rejects opaque loader inputs, loader escapes and external chunks when names change', () => {
     for (const source of [
         'local value = 1; return load(reader)',

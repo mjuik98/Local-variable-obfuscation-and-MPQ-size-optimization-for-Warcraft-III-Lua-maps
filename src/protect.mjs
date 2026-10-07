@@ -30,7 +30,7 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     onProgress('validate');
     const config = resolveConfig(configuration);
     const signature = input.subarray(0, 4);
-    assert(signature.equals(Buffer.from([77, 80, 81, 26])) || signature.toString('ascii') === 'HM3W', 'Expected a raw MPQ or HM3W-prefixed Warcraft III map');
+    assert(signature.equals(Buffer.from([77, 80, 81, 26])) || signature.equals(Buffer.from('HM3W')), 'Expected a raw MPQ or HM3W-prefixed Warcraft III map');
     const original = openMap(input);
     assert(original.has('war3map.lua'), 'Missing root war3map.lua');
     assert(!original.has('war3map.j') && !original.has('Scripts\\war3map.j') && !original.has('Scripts\\war3map.lua'), 'Ambiguous or mixed map scripts are unsupported');
@@ -45,7 +45,7 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
         const declarations = ast.body.filter(node => node.type === 'FunctionDeclaration' && !node.isLocal && node.identifier?.type === 'Identifier' && node.identifier.name === name);
         assert(declarations.length === 1, 'Expected one top-level ' + name + ' function');
     }
-    const cleanup = planCleanup(original, ast, config.cleanup, { cleanupContract, scriptBytes, inputBytes: input });
+    const cleanup = planCleanup(original, ast, config.cleanup, { cleanupContract, scriptBytes, inputBytes: input, prepared, code });
     const savings = createSavingsTracker(input, original);
     onProgress('lua');
     const vm = transformVm(code, { functions: config.lua.vmFunctions, seed: config.lua.seed }, { prepared, prepareOutput: true });

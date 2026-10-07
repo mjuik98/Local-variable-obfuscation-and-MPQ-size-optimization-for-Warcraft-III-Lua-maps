@@ -141,3 +141,20 @@ test('closed tables reject escapes, dynamic access, metatables and non-method co
     assert(!/alpha|beta|gamma|sum/.test(result.code));
     assert.deepEqual(runLua(result.code), runLua(closed));
 });
+
+test('closed-table method discovery includes nested self methods and preserves escaping self fields', () => {
+    for (const escape of [false, true]) {
+        const source = `local T = {value = 2}
+            function T:initialize()
+                function self:calculate(step) return self.value + step end
+                function self:nested()
+                    function self:last() return ${escape ? 'self' : 'self.value'} end
+                end
+            end
+            T:initialize(); T:nested()
+            return T:calculate(3), ${escape ? 'T:last().value' : 'T:last()'}`;
+        const result = transformLua(source, {renameFields: true});
+        assert.equal(result.stats.closedTables, escape ? 0 : 1);
+        assert.deepEqual(runLua(result.code), runLua(source));
+    }
+});

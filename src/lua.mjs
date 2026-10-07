@@ -52,6 +52,14 @@ function lookup(current, name) {
     return null;
 }
 
+// Only the final call/vararg initializer may supply additional values. The
+// alias analysis joins possible return values instead of assigning a precise
+// result position, so each receiving binding or exported field keeps it.
+function assignedValue(values, index) {
+    return values[index] ??
+        (['CallExpression', 'StringCallExpression', 'TableCallExpression', 'VarargLiteral'].includes(values.at(-1)?.type) ? values.at(-1) : undefined);
+}
+
 // luaparse's isLocal metadata places for variables in scope too early for
 // control expressions. Resolve bindings ourselves using Lua's lexical rules.
 function resolveBindings(ast, {trackResources = false, resourcesOnly = false} = {}) {
@@ -143,25 +151,36 @@ function resolveBindings(ast, {trackResources = false, resourcesOnly = false} = 
         case 'Chunk': block(node.body, current); return;
         case 'LocalStatement':
             node.init.forEach(value => visit(value, current));
-            node.variables.forEach((variable, index) => assign(declare(current, variable), node.init[index]));
+            node.variables.forEach((variable, index) => assign(declare(current, variable), assignedValue(node.init, index)));
             return;
         case 'AssignmentStatement':
             node.variables.forEach(variable => visit(variable, current));
             node.init.forEach(value => visit(value, current));
             if (resourcesOnly) return;
             node.variables.forEach((variable, index) => {
-                if (variable.type !== 'Identifier' || !node.init[index]) return;
+                const value = assignedValue(node.init, index);
+                if (variable.type !== 'Identifier' || !value) return;
                 const binding = lookup(current, variable.name);
-                if (binding) assign(binding, node.init[index]);
+                if (binding) assign(binding, value);
                 else {
                     const sources = globalDefinitions.get(variable.name) ?? [];
-                    sources.push(node.init[index]); globalDefinitions.set(variable.name, sources);
+                    sources.push(value); globalDefinitions.set(variable.name, sources);
                 }
             });
             return;
         case 'FunctionDeclaration': {
             if (node.isLocal) declare(current, node.identifier);
-            else visit(node.identifier, current);
+            else {
+                visit(node.identifier, current);
+                if (!resourcesOnly && node.identifier?.type === 'Identifier') {
+                    const binding = lookup(current, node.identifier.name);
+                    if (binding) assign(binding, node);
+                    else {
+                        const sources = globalDefinitions.get(node.identifier.name) ?? [];
+                        sources.push(node); globalDefinitions.set(node.identifier.name, sources);
+                    }
+                }
+            }
             const inner = enterScope(current, node);
             if (node.identifier?.type === 'MemberExpression' && node.identifier.indexer === ':') {
                 declare(inner, {name: 'self'}, true);
@@ -263,6 +282,9 @@ function reflectionRisk(ast, resolved, depth = 0) {
         }
         return result;
     };
+    const overriddenGlobals = new Set(resolved.globalDefinitions.keys());
+    const overriddenFields = new Map();
+    let unknownEnvironmentWrite = false;
     const builtin = name => {
         const result = empty();
         if (['_G', '_ENV'].includes(name)) result.roles.add('environment');
@@ -273,6 +295,9 @@ function reflectionRisk(ast, resolved, depth = 0) {
         else if (['collectgarbage', 'gcinfo'].includes(name)) result.roles.add('memoryObserver');
         else if ([...loaderRoles, 'rawget', 'assert', 'pcall', 'xpcall'].includes(name)) result.roles.add(name);
         else result.unknown = true;
+        // Keep capabilities as possible risks, but a script-written name no
+        // longer proves the built-in's forwarding or lookup contract.
+        result.unknown ||= overriddenGlobals.has(name) || unknownEnvironmentWrite;
         return result;
     };
     const argumentsOf = node => node.type === 'StringCallExpression' ? [node.argument] :
@@ -290,12 +315,16 @@ function reflectionRisk(ast, resolved, depth = 0) {
         if (base.roles.has('environment') && ['dump', 'collectgarbage', 'gcinfo'].includes(key)) mark('runtimeObserved', node,
             key === 'dump' ? 'dump observes function bytecode' : key + ' observes or controls Lua memory');
         const values = [];
+        let changedField = false;
         if (base.roles.has('environment') && key !== null) values.push(builtin(key));
         for (const table of base.tables) {
             const fields = table.fields.filter(field => (field.type === 'TableKeyString' ? field.key.name : literalString(field.key)) === key);
             values.push(...fields.map(field => valueOf(field.value, trail)));
+            const changed = overriddenFields.get(table);
+            changedField ||= changed?.has(key) || changed?.has(null) || false;
         }
         const result = values.length ? merge(values) : empty(true);
+        result.unknown ||= changedField;
         if (result.roles.has('debug')) mark('reflected', node, 'debug namespace lookup');
         if (result.roles.has('package')) mark('opaque', node, 'package exposes external modules and environments');
         return result;
@@ -365,6 +394,8 @@ function reflectionRisk(ast, resolved, depth = 0) {
         }
         case 'CallExpression': case 'StringCallExpression': case 'TableCallExpression': {
             const callee = valueOf(node.base, trail), args = argumentsOf(node);
+            const fixedRole = !callee.unknown && !callee.strings.size && !callee.tables.size && callee.roles.size === 1 ?
+                callee.roles.values().next().value : null;
             const argumentValues = new Map();
             const argumentValue = argument => {
                 if (!argumentValues.has(argument)) argumentValues.set(argument, valueOf(argument, trail));
@@ -373,16 +404,18 @@ function reflectionRisk(ast, resolved, depth = 0) {
             inspectLoader(callee, args, trail, node);
             // A loader passed to an unanalysed function can later execute code
             // supplied there. Do not infer that the eventual source is harmless.
-            if (!['assert', 'pcall', 'xpcall'].some(role => callee.roles.has(role)) &&
-                args.some(argument => loaderRoles.some(role => argumentValue(argument).roles.has(role)))) mark('opaque', node, 'loader passed to an unanalysed function');
+            if (args.some((argument, index) => loaderRoles.some(role => argumentValue(argument).roles.has(role)) &&
+                fixedRole !== 'assert' && !(index === 0 && ['pcall', 'xpcall'].includes(fixedRole)))) {
+                mark('opaque', node, 'loader passed to an unanalysed function');
+            }
             // An environment can expose debug/load through a returned proxy,
             // metatable, or callback. Only direct lookup/assert and a verified
             // literal load's explicit environment have a known local contract.
-            if (!['rawget', 'assert', 'load'].some(role => callee.roles.has(role)) &&
+            if (!['rawget', 'assert', 'load'].includes(fixedRole) &&
                 args.some(argument => argumentValue(argument).roles.has('environment'))) mark('opaque', node, 'environment passed to an unanalysed function');
-            if (!['rawget', 'assert'].some(role => callee.roles.has(role)) &&
+            if (!['rawget', 'assert'].includes(fixedRole) &&
                 args.some(argument => argumentValue(argument).roles.has('debug'))) mark('sourceLocation', node, 'debug namespace passed to an unanalysed function');
-            if (!['rawget', 'assert'].some(role => callee.roles.has(role)) &&
+            if (!['rawget', 'assert'].includes(fixedRole) &&
                 args.some(argument => argumentValue(argument).roles.has('stringLibrary'))) mark('runtimeObserved', node,
                 'string library passed to an unanalysed function may expose function bytecode');
             if (callee.roles.has('rawget')) {
@@ -392,7 +425,10 @@ function reflectionRisk(ast, resolved, depth = 0) {
                     'rawget uses a dynamic string key that may expose function bytecode');
                 return keys.strings.size ? merge([...keys.strings].map(key => propertyValue(base, key, trail, node))) : empty(true);
             }
-            if (callee.roles.has('assert')) return argumentValue(args[0]);
+            // assert returns every argument. Joining them also preserves a
+            // loader/environment carried in its second or later result, or
+            // forwarded by another assert call, return or argument list.
+            if (callee.roles.has('assert')) return merge(args.map(argumentValue));
             if (callee.roles.has('pcall') || callee.roles.has('xpcall')) {
                 inspectLoader(argumentValue(args[0]), args.slice(callee.roles.has('xpcall') ? 2 : 1), trail, node);
             }
@@ -401,6 +437,29 @@ function reflectionRisk(ast, resolved, depth = 0) {
         default: return empty(true);
         }
     };
+    // Environment aliases and table fields can replace the same built-ins as
+    // direct assignments, including `function holder.member()` declarations.
+    // Discover writes before applying any built-in argument-safety exception.
+    eachNode(ast, node => {
+        const variables = node.type === 'AssignmentStatement' ? node.variables :
+            node.type === 'FunctionDeclaration' && !node.isLocal ? [node.identifier] : [];
+        for (const variable of variables) {
+            if (!['MemberExpression', 'IndexExpression'].includes(variable?.type)) continue;
+            const base = valueOf(variable.base);
+            const keys = variable.type === 'MemberExpression' ? {strings: new Set([variable.identifier.name]), unknown: false} : valueOf(variable.index);
+            if (base.roles.has('environment')) {
+                keys.strings.forEach(key => overriddenGlobals.add(key));
+                unknownEnvironmentWrite ||= keys.unknown || !keys.strings.size;
+            }
+            for (const table of base.tables) {
+                const changed = overriddenFields.get(table) ?? new Set();
+                keys.strings.forEach(key => changed.add(key));
+                if (keys.unknown || !keys.strings.size) changed.add(null);
+                overriddenFields.set(table, changed);
+            }
+        }
+    });
+    rootValues.clear();
     eachNode(ast, node => {
         if (node.type === 'Identifier' && resolved.globalReferences.has(node) && node.name === 'package') mark('opaque', node, 'package exposes external modules and environments');
         if (node.type === 'Identifier' && resolved.globalReferences.has(node) && sourceLocationNames.has(node.name)) mark('sourceLocation', node, node.name + ' observes source text or line locations');
@@ -414,14 +473,14 @@ function reflectionRisk(ast, resolved, depth = 0) {
             'string library returned to an unanalysed caller may expose function bytecode');
         if (node.type === 'AssignmentStatement' && node.variables.some((variable, index) =>
             (variable.type !== 'Identifier' || !resolved.references.has(variable)) &&
-                (loaderRoles.some(role => valueOf(node.init[index]).roles.has(role)) ||
-                ['environment', 'package', 'debug'].some(role => valueOf(node.init[index]).roles.has(role))))) mark('opaque', node, 'environment or loader exported to a global or field');
+                (loaderRoles.some(role => valueOf(assignedValue(node.init, index)).roles.has(role)) ||
+                ['environment', 'package', 'debug'].some(role => valueOf(assignedValue(node.init, index)).roles.has(role))))) mark('opaque', node, 'environment or loader exported to a global or field');
         if (['TableValue', 'TableKey', 'TableKeyString'].includes(node.type) &&
             (loaderRoles.some(role => valueOf(node.value).roles.has(role)) || valueOf(node.value).roles.has('environment'))) mark('opaque', node, 'loader or environment stored in a table or metatable');
         if (['TableValue', 'TableKey', 'TableKeyString'].includes(node.type) && valueOf(node.value).roles.has('stringLibrary')) mark('runtimeObserved', node,
             'string library stored in a table or metatable may expose function bytecode');
         if (node.type === 'AssignmentStatement' && node.variables.some((variable, index) =>
-            (variable.type !== 'Identifier' || !resolved.references.has(variable)) && valueOf(node.init[index]).roles.has('stringLibrary'))) mark('runtimeObserved', node,
+            (variable.type !== 'Identifier' || !resolved.references.has(variable)) && valueOf(assignedValue(node.init, index)).roles.has('stringLibrary'))) mark('runtimeObserved', node,
             'string library exported to a global or field may expose function bytecode');
     });
     return {reflected, opaque, sourceLocation, runtimeObserved, causes};

@@ -41,9 +41,9 @@ export function compressionThreads() {
     return Math.max(0, Math.min(12, os.availableParallelism() - 1));
 }
 
-function workers() {
-    if (pool) return pool;
-    pool = Array.from({ length: compressionThreads() }, () => {
+function workers(count) {
+    pool ??= [];
+    while (pool.length < count) {
         // Parent flags such as --input-type stop a worker from loading its module,
         // and the waiting caller could not observe that failure; workers need none.
         const worker = new Worker(new URL('./compress-worker.mjs', import.meta.url), { execArgv: [] });
@@ -51,9 +51,9 @@ function workers() {
         worker.postMessage({ port: port2 }, [port2]);
         // Idle workers must not keep the process alive.
         worker.unref();
-        return { worker, port: port1 };
-    });
-    return pool;
+        pool.push({ worker, port: port1 });
+    }
+    return pool.slice(0, count);
 }
 
 // Compress independent sectors. Each result depends only on its own sector,
@@ -61,10 +61,12 @@ function workers() {
 // synchronous: it waits on a shared counter and drains result ports directly.
 export function compressSectors(sectors, options, { threads } = {}) {
     assert(Array.isArray(sectors) && sectors.every(Buffer.isBuffer), 'Sectors must be Buffers');
+    assert(threads === undefined || (Number.isInteger(threads) && threads >= 0), 'Compression threads must be a nonnegative integer');
     const total = sectors.reduce((sum, sector) => sum + sector.length, 0);
-    const wanted = threads ?? (options.zopfli || total >= POOL_THRESHOLD ? compressionThreads() : 0);
-    if (wanted < 1 || sectors.length < 2 || compressionThreads() < 1) return sectors.map(raw => compressSector(raw, options));
-    const active = workers().slice(0, wanted);
+    const available = compressionThreads();
+    const wanted = Math.min(threads ?? (options.zopfli || total >= POOL_THRESHOLD ? available : 0), available, sectors.length);
+    if (wanted < 1 || sectors.length < 2) return sectors.map(raw => compressSector(raw, options));
+    const active = workers(wanted);
     const data = new Uint8Array(new SharedArrayBuffer(Math.max(1, total)));
     const offsets = new Int32Array(new SharedArrayBuffer((sectors.length + 1) * 4));
     let cursor = 0;

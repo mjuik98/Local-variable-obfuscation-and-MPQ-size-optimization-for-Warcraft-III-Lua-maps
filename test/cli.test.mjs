@@ -395,6 +395,23 @@ test('CLI selects Zopfli compression candidates explicitly', () => {
     assert.throws(() => parseArguments(['--show-settings', '--zopfli', '--zopfli']));
 });
 
+test('CLI no-cleanup preserves the listfile enabled by a preset or JSON and refuses conflicting deletion', t => {
+    const map = fixture(t), settings = path.join(path.dirname(map.source), 'cleanup.json');
+    fs.writeFileSync(settings, JSON.stringify({ cleanup: { editor: true, development: true, editorData: true, listfile: true } }));
+    for (const layer of [['--preset', 'maximum'], ['--config', settings]]) {
+        const preview = capture(['--show-settings', ...layer, '--no-cleanup']);
+        assert.equal(preview.status, 0, preview.stderr);
+        const config = JSON.parse(preview.stdout).config;
+        for (const key of ['editor', 'development', 'editorData', 'listfile', 'editorBlock']) assert.equal(config.cleanup[key], false, key);
+        const input = fs.readFileSync(map.source), result = protectMap(input, config);
+        assert.deepEqual(result.summary.removedFiles, []);
+        assert(openMap(result.bytes).has('(listfile)'));
+    }
+    for (const flags of [['--no-cleanup', '--remove-listfile'], ['--remove-listfile', '--no-cleanup']]) {
+        assert.throws(() => parseArguments(['--show-settings', ...flags]), /--no-cleanup conflicts/);
+    }
+});
+
 test('unreadable configuration and contract files are named in the error', t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'w3lua-cli-config-'));
     t.after(() => fs.rmSync(root, { recursive: true }));

@@ -42,7 +42,7 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --no-preload-strings    Decode runtime strings on first use
 --keep-string <value>   Preserve a decoded string value (repeatable)
 --keep-string=<value>   Preserve any value, including empty or -- prefixed strings
---no-cleanup            Preserve editor and development files
+--no-cleanup            Disable all cleanup, including listfile removal and editor blocking
 --clean-editor          Remove the two known editor trigger files if references can be checked
 --clean-development     Remove the two known LoTKT development metadata files
 --clean-editor-data     Remove editor region, camera, sound data and the import manifest if references can be checked
@@ -114,7 +114,7 @@ export function parseArguments(args) {
         } else if (argument === '--no-minify' || argument === '--no-rename') {
             unique(argument); parsed.overrides.lua[argument === '--no-minify' ? 'minify' : 'renameLocals'] = false;
         } else if (argument === '--no-cleanup') {
-            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false, editorData: false, editorBlock: false });
+            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false, editorData: false, editorBlock: false, listfile: false });
         } else if (argument === '--clean-development' || argument === '--clean-editor' || argument === '--clean-editor-data') {
             unique(argument); parsed.overrides.cleanup[argument === '--clean-editor' ? 'editor' : argument === '--clean-editor-data' ? 'editorData' : 'development'] = true;
         } else if (argument === '--remove-listfile' || argument === '--keep-listfile') {
@@ -154,7 +154,7 @@ export function parseArguments(args) {
             parsed.input = argument;
         }
     }
-    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data') || seen.has('--block-editor') || seen.has('--block-editor-accept-dynamic'))), '--no-cleanup conflicts with cleanup options');
+    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data') || seen.has('--block-editor') || seen.has('--block-editor-accept-dynamic') || seen.has('--remove-listfile'))), '--no-cleanup conflicts with cleanup options');
     assert(!(seen.has('--hide-strings') && seen.has('--no-hide-strings')), '--hide-strings conflicts with --no-hide-strings');
     assert(!(seen.has('--string-mode') && seen.has('--no-runtime-strings')), '--string-mode conflicts with --no-runtime-strings');
     // Escape mode cannot keep a preset's all-literal scope; an explicit

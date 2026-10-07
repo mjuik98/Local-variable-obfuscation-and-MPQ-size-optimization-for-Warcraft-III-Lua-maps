@@ -47,7 +47,38 @@ test('compression workers start when the host process runs evaluated module code
     // synchronous caller waited for the ten-minute stall limit.
     const code = `import { compressSectors } from ${JSON.stringify(new URL('../src/compress.mjs', import.meta.url).href)};
         compressSectors([Buffer.alloc(4096, 1), Buffer.alloc(4096, 2)], { levels: [6], strategies: ['default'] }, { threads: 1 });`;
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 30000 });
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+    assert.equal(result.signal, null, 'Compression did not finish');
+    assert.equal(result.status, 0, result.stderr);
+});
+
+test('thread selection rejects invalid counts before waiting for workers', () => {
+    const sectors = [text(1), text(2)], options = { levels: [6], strategies: ['default'] };
+    for (const threads of [-1, 1.5, NaN, Infinity, '1']) {
+        assert.throws(() => compressSectors(sectors, options, { threads }), /Compression threads must be a nonnegative integer/);
+    }
+    assert.deepEqual(compressSectors(sectors, options, { threads: 0 }), sectors.map(sector => compressSector(sector, options)));
+});
+
+test('the pool starts only the workers that requested sectors can use', () => {
+    if (compressionThreads() < 1) return;
+    const code = `import assert from 'node:assert/strict';
+        import workerThreads from 'node:worker_threads';
+        import { syncBuiltinESMExports } from 'node:module';
+        const OriginalWorker = workerThreads.Worker;
+        let created = 0;
+        workerThreads.Worker = class extends OriginalWorker { constructor(...args) { super(...args); created++; } };
+        syncBuiltinESMExports();
+        const { compressSectors, compressionThreads } = await import(${JSON.stringify(new URL('../src/compress.mjs', import.meta.url).href)});
+        const sectors = [Buffer.alloc(4096, 1), Buffer.alloc(4096, 2)];
+        const options = { levels: [6], strategies: ['default'] };
+        compressSectors(sectors, options, { threads: 1 });
+        assert.equal(created, 1);
+        compressSectors(sectors, options, { threads: compressionThreads() });
+        assert.equal(created, Math.min(2, compressionThreads()));
+        compressSectors(sectors, options, { threads: 1 });
+        assert.equal(created, Math.min(2, compressionThreads()));`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 30000, windowsHide: true });
     assert.equal(result.signal, null, 'Compression did not finish');
     assert.equal(result.status, 0, result.stderr);
 });

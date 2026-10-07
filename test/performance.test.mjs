@@ -35,6 +35,19 @@ test('parsing scripts with many distinct globals stays linear', () => {
     `);
 });
 
+test('closed-table method analysis avoids rescanning every field per method', () => {
+    runBounded(`
+        import assert from 'node:assert/strict';
+        import { transformLua } from ${moduleUrl('../src/lua.mjs')};
+        const count = 40000, parts = ['local Methods = {value = 7}'];
+        for (let index = 0; index < count; index++) parts.push('function Methods:method' + index + '() return self.value end');
+        parts.push('return Methods:method0()');
+        const result = transformLua(parts.join('\\n'), { renameFields: true });
+        assert.equal(result.stats.closedTables, 1);
+        assert.equal(result.stats.renamedFields, count + 1);
+    `);
+});
+
 test('archive updates with many entries avoid repeated hash-table scans', () => {
     // Replacement verification previously compared every block with every change
     // (about 70 s for this archive); it is now linear (about 2 s).

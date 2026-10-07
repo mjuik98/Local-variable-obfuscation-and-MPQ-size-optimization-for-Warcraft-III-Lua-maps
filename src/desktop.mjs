@@ -44,7 +44,8 @@ export function createDesktopSession({ emit = () => {}, limitBytes } = {}) {
             const completion = new Promise(done => { resolve = done; });
             const job = { state, resolve };
             active = job;
-            current.postMessage({ request, state: state.buffer });
+            try { current.postMessage({ request, state: state.buffer }); }
+            catch (error) { active = null; throw error; }
             return { completion, cancel() {
                 if (active !== job) return false;
                 for (const phase of [0, 2]) {
@@ -69,7 +70,10 @@ export function createDesktopSession({ emit = () => {}, limitBytes } = {}) {
 }
 
 export function startDesktopJob(request, options = {}) {
-    const session = createDesktopSession(options), job = session.run(request);
+    const session = createDesktopSession(options);
+    let job;
+    try { job = session.run(request); }
+    catch (error) { void session.close(); throw error; }
     return { cancel: job.cancel, completion: job.completion.finally(() => session.close()) };
 }
 

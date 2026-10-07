@@ -46,6 +46,7 @@ export function writeNewOutput(destination, contents, { beforePublish = () => {}
     // destination already exists. No rename-overwrite fallback is permitted.
     const directory = fs.mkdtempSync(path.join(path.dirname(destination), '.w3lua-'));
     const temporary = path.join(directory, 'result');
+    let failure, failed = false;
     try {
         const descriptor = fs.openSync(temporary, 'wx', 0o600);
         try { fs.writeFileSync(descriptor, contents); fs.fsyncSync(descriptor); }
@@ -55,8 +56,15 @@ export function writeNewOutput(destination, contents, { beforePublish = () => {}
         finally { fs.closeSync(reader); }
         beforePublish();
         fs.linkSync(temporary, destination);
-    } finally {
-        fs.rmSync(temporary, { force: true });
-        fs.rmdirSync(directory);
+    } catch (error) { failure = error; failed = true; }
+    // Attempt both owned cleanup operations and retain the publication error.
+    // A locked temporary file must not replace an input-change or EEXIST error.
+    const cleanupErrors = [];
+    for (const remove of [() => fs.rmSync(temporary, { force: true }), () => fs.rmdirSync(directory)]) {
+        try { remove(); } catch (error) { cleanupErrors.push(error); }
     }
+    if (cleanupErrors.length) throw new AggregateError(failed ? [failure, ...cleanupErrors] : cleanupErrors,
+        (failed ? (failure?.message ?? String(failure)) + '; ' : '') + 'Temporary output cleanup failed: ' + cleanupErrors.map(error => error.message).join('; '),
+        failed ? { cause: failure } : undefined);
+    if (failed) throw failure;
 }

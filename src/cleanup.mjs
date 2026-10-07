@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { canonicalPath } from './config.mjs';
-import { resolveLuaBindings } from './lua.mjs';
+import { getPreparedLuaAst, getPreparedLuaBindings, resolveLuaBindings } from './lua.mjs';
 import { ignoredKeys, literalString as constantString } from './lua-syntax.mjs';
 
 const EDITOR_FILES = ['war3map.wtg', 'war3map.wct'];
@@ -92,10 +92,10 @@ function walk(node, visit, parent = null) {
     }
 }
 
-function validateReferences(ast, names, reviewed = false) {
+function validateReferences(ast, names, reviewed, globalNames) {
     const paths = names.map(canonicalPath);
     const forbiddenApi = name => FILE_APIS.has(name) && !(reviewed && name === 'Preloader');
-    for (const name of resolveLuaBindings(ast).globalNames) {
+    for (const name of globalNames) {
         const detail = 'File cleanup cannot prove runtime file references for ' + name + '; use --no-cleanup or preserve the candidates';
         const message = name === 'Preloader' ?
             '파일 정리를 중단했습니다. Preloader가 있어 정리 대상의 실행 중 사용 여부를 확인할 수 없습니다.\n' +
@@ -176,8 +176,15 @@ export function planCleanup(map, ast, options, context = {}) {
     // Preloader paths and environment lookups never read the trigger files;
     // it covers the rewritten trigger files only, never deletions. External
     // loaders, reflection APIs and explicit name references stay refused.
-    if (names.length) validateReferences(ast, names, reviewed !== null);
-    if (blocked.length) validateReferences(ast, blocked.map(([name]) => name), reviewed !== null || options.editorBlockAcceptDynamic === true);
+    // Deletion and blocking have different permissions but share one source
+    // scope analysis, also reused by the subsequent Lua transform when supplied.
+    let bindings;
+    if (context.prepared !== undefined) {
+        assert.equal(getPreparedLuaAst(context.prepared, context.code), ast, 'Prepared cleanup AST does not match');
+        bindings = getPreparedLuaBindings(context.prepared, context.code);
+    } else bindings = resolveLuaBindings(ast);
+    if (names.length) validateReferences(ast, names, reviewed !== null, bindings.globalNames);
+    if (blocked.length) validateReferences(ast, blocked.map(([name]) => name), reviewed !== null || options.editorBlockAcceptDynamic === true, bindings.globalNames);
     if (!names.length) return { names, imports: null, blocked };
     // A removed manifest needs no row updates.
     if (names.some(name => canonicalPath(name) === 'WAR3MAP.IMP')) return { names, imports: null, blocked };

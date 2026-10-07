@@ -42,6 +42,13 @@ function expectReReview(before, after, pattern) {
     return result;
 }
 
+test('contract review refuses high-bit lookalikes of the HM3W prefix on either input', () => {
+    const source = fixture(), invalid = Buffer.from(source);
+    invalid[0] |= 0x80;
+    assert.throws(() => reviewCleanupContract(invalid, source, contractFor(invalid)), /Previous must be a raw MPQ or HM3W/);
+    assert.throws(() => reviewCleanupContract(source, invalid, contractFor(source)), /New must be a raw MPQ or HM3W/);
+});
+
 test('packing-only review returns an explicit v1 proposal without mutating inputs or review evidence', () => {
     const before = fixture({ gap: 40, level: 1, attributes: true }), after = fixture({ gap: 12, level: 9, attributes: true });
     const contract = contractFor(before), original = structuredClone(contract), beforeCopy = Buffer.from(before), afterCopy = Buffer.from(after);

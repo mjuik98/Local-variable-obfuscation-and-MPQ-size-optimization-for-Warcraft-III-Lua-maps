@@ -64,6 +64,14 @@ test('compression strategies reject malformed and unsupported values even when c
     }
 });
 
+test('sparse compression levels are refused before normalization even when compression is disabled', () => {
+    for (const levels of [new Array(1), Object.assign(new Array(3), { 0: 6, 2: 9 }), [undefined], [NaN], [Infinity]]) {
+        for (const enabled of [true, false]) {
+            assert.throws(() => resolveConfig({ compression: { enabled, levels } }), /compression\.levels/);
+        }
+    }
+});
+
 test('experimental global, field, native and sector options are strict and default off', () => {
     const defaults = resolveConfig();
     assert.equal(defaults.lua.renameGlobals, false);

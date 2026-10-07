@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import { openMap, crc32 } from '../src/mpq.mjs';
+import { protectMap } from '../src/protect.mjs';
+import { createLuaMap } from './map-fixture.mjs';
 import { createTestMap, inspectTestTables, mutateTestMap, fixtureHash, fixtureTransform } from './mpq-fixture.mjs';
 
 const ALL_STRATEGIES = ['default', 'filtered', 'huffman-only', 'rle', 'fixed'];
@@ -430,6 +432,65 @@ test('incompressible replacement is stored raw without a larger sector table', (
     assert.deepEqual(map.read('raw.bin'), entropy);
     assert.equal(map.inspect().blocks[0].flags, 0x80000000);
     assert.equal(map.inspect().blocks[0].packedSize, entropy.length);
+});
+
+test('oversized sectors that the engine would read raw are never decoded as zlib', () => {
+    const contents = Buffer.from('tiny');
+    const compressed = Buffer.concat([Buffer.from([2]), zlib.deflateSync(contents)]);
+    assert(compressed.length > contents.length);
+    const table = Buffer.alloc(8);
+    table.writeUInt32LE(8, 0);
+    table.writeUInt32LE(8 + compressed.length, 4);
+    const source = createTestMap([['file.bin', { data: Buffer.concat([table, compressed]), decoded: contents, flags: 0x80000200 }]]);
+    const map = openMap(source);
+    assert.throws(() => map.read('file.bin'), /Stored MPQ sector size exceeds decoded size/);
+    assert.throws(() => map.read('file.bin', true), /Stored MPQ sector size exceeds decoded size/);
+    assert.throws(() => map.optimize(), /Stored MPQ sector size exceeds decoded size/);
+    assert.throws(() => map.replace([['file.bin', Buffer.from('replacement')]]), /Stored MPQ sector size exceeds decoded size/);
+});
+
+test('unsupported block layouts cannot be decoded and remain opaque during compaction', () => {
+    const contents = Buffer.alloc(512, 7), table = Buffer.alloc(12);
+    table.writeUInt32LE(12, 0);
+    table.writeUInt32LE(12 + contents.length, 4);
+    table.writeUInt32LE(16 + contents.length, 8);
+    const crcPayload = Buffer.concat([table, contents, Buffer.alloc(4)]);
+    const source = createTestMap([
+        ['crc.bin', { data: crcPayload, decoded: contents, flags: 0x84000200 }],
+        ['patch.bin', { data: Buffer.from('opaque patch contents'), flags: 0x80100000 }],
+    ], { gap: 32 });
+    const map = openMap(source);
+    for (const name of ['crc.bin', 'patch.bin']) {
+        assert.throws(() => map.read(name), /Unsupported MPQ block flags/);
+        assert.equal(map.read(name, true), null);
+    }
+    for (const output of [map.compact(), map.optimize()]) {
+        assert(map.verifyPreserved(output));
+        const after = openMap(output);
+        assert.equal(after.read('crc.bin', true), null);
+        assert.equal(after.read('patch.bin', true), null);
+    }
+});
+
+test('map protection preserves opaque assets and rejects unsupported required or metadata reads', () => {
+    const source = createLuaMap({ extraEntries: [['opaque.bin', { data: Buffer.alloc(64, 9), flags: 0x80100000 }]], mpq: { attributes: true } });
+    const map = openMap(source), result = protectMap(source, { compression: { enabled: false } });
+    assert(map.verifyPreserved(result.bytes, { changedNames: ['war3map.lua'] }));
+    assert.equal(openMap(result.bytes).read('opaque.bin', true), null);
+    for (const name of ['war3map.lua', 'war3map.w3i', 'war3map.w3e', '(listfile)', '(attributes)']) {
+        const unsupported = mutateTestMap(source, ({ hashes, blocks }) => {
+            for (let p = 0; p < hashes.length; p += 16) {
+                if (hashes.readUInt32LE(p) !== fixtureHash(name, 1) || hashes.readUInt32LE(p + 4) !== fixtureHash(name, 2)) continue;
+                const index = hashes.readUInt32LE(p + 12);
+                blocks.writeUInt32LE((blocks.readUInt32LE(index * 16 + 12) | 0x100000) >>> 0, index * 16 + 12);
+            }
+        });
+        assert.throws(() => protectMap(unsupported), /Unsupported MPQ block flags/, name + ' must not be interpreted with an unsupported layout');
+        if (name === '(listfile)') {
+            const preserved = protectMap(unsupported, { lua: { minify: false, renameLocals: false }, compression: { enabled: false } });
+            assert(openMap(unsupported).verifyPreserved(preserved.bytes), 'An unreadable listfile stays opaque when no stage needs its names');
+        }
+    }
 });
 
 test('malformed compressed sectors fail rather than silently falling back', () => {

@@ -239,12 +239,15 @@ export function openMap(input) {
         assert(flags & 0x80000000, 'Entry is not live: ' + label);
         // Opaque input files remain replaceable even when we cannot decode them
         // for the optional identical-content comparison.
-        if (skipUnsupported && ((flags & (0x100 | 0x1000000)) ||
+        if (skipUnsupported && ((flags & ~0x80030200) ||
             ((flags & 0x10000) && !(flags & 0x200)))) return null;
         assert.equal(flags & 0x100, 0, 'PKWARE compression is unsupported: ' + label);
         // Warcraft III ignores SINGLE_UNIT, unlike generic MPQ readers.
         // Accepting it here would let a self-readable but unplayable map pass validation.
         assert.equal(flags & 0x1000000, 0, 'Warcraft III does not support single-unit MPQ entries: ' + label);
+        // Patch data and sector checksums need layouts and verification that this
+        // reader does not implement. They can only survive as opaque payloads.
+        assert.equal(flags & ~0x80030200, 0, 'Unsupported MPQ block flags: ' + label);
         assert(offset + start + packed <= archiveEnd, 'Entry outside archive: ' + label);
         const data = bytes.subarray(offset + start, offset + start + packed);
         let key = 0;
@@ -253,6 +256,9 @@ export function openMap(input) {
             key = fileKey(name, start, length, flags);
         }
         function unpack(chunk, expected) {
+            // Storm decompresses only when the stored sector is smaller. A larger
+            // zlib stream would be read as raw bytes by the game instead.
+            assert(chunk.length <= expected, 'Stored MPQ sector size exceeds decoded size: ' + label);
             if (chunk.length === expected) return chunk;
             assert(flags & 0x200, 'Uncompressed length mismatch: ' + label);
             if (skipUnsupported && chunk[0] !== 2) return null;
@@ -424,16 +430,21 @@ export function openMap(input) {
         });
         const packed = compressSectors(sectors, { levels, strategies, zopfli });
         return items.map(({ contents, keepSectors = false }, item) => {
-            const { first, count } = layout[item], table = Buffer.alloc((count + 1) * 4), chunks = [table];
-            let cursor = table.length;
+            const { first, count } = layout[item], tableSize = (count + 1) * 4;
+            let packedSize = tableSize;
+            for (let i = 0; i < count; i++) packedSize += packed[first + i].length;
+            // Incompressible files commonly win as raw bytes; avoid constructing
+            // and immediately discarding another full-size copy of their contents.
+            if (!keepSectors && packedSize >= contents.length) return { data: contents, flags: 0x80000000 };
+            const table = Buffer.alloc(tableSize), chunks = [table];
+            let cursor = tableSize;
             for (let i = 0; i < count; i++) {
                 table.writeUInt32LE(cursor, i * 4);
                 chunks.push(packed[first + i]);
                 cursor += packed[first + i].length;
             }
             table.writeUInt32LE(cursor, count * 4);
-            const compressed = Buffer.concat(chunks);
-            return keepSectors || compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
+            return { data: Buffer.concat(chunks, packedSize), flags: 0x80000200 };
         });
     }
     function encode(contents, encoding) {

@@ -56,7 +56,32 @@ test('an output created during processing wins and is never overwritten', t => {
 test('failed publication guards remove temporary files and publish no output', t => {
     const root = directory(t), target = path.join(root, 'target.bin');
     assert.throws(() => writeNewOutput(target, Buffer.from('complete'), { beforePublish: () => { throw new Error('Input changed'); } }), /Input changed/);
+    for (const failure of [undefined, null, false, 0, '']) {
+        assert.throws(() => writeNewOutput(target, Buffer.from('complete'), { beforePublish() { throw failure; } }), error => {
+            assert.equal(error, failure); return true;
+        });
+    }
     assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test('temporary cleanup errors retain the failed publication guard and attempt directory cleanup', t => {
+    const root = directory(t), target = path.join(root, 'target.bin'), failure = new Error('Input changed before publication');
+    assert.throws(() => writeNewOutput(target, Buffer.from('complete'), { beforePublish() {
+        const temporaryDirectory = path.join(root, fs.readdirSync(root)[0]);
+        const temporary = path.join(temporaryDirectory, 'result');
+        fs.unlinkSync(temporary);
+        // Simulate a temporary path that cannot be removed as a file.
+        fs.mkdirSync(temporary);
+        throw failure;
+    } }), error => {
+        assert(error instanceof AggregateError);
+        assert.equal(error.cause, failure);
+        assert.equal(error.errors[0], failure);
+        assert.equal(error.errors.length, 3);
+        assert.match(error.message, /Input changed before publication.*Temporary output cleanup failed/);
+        return true;
+    });
+    assert(!fs.existsSync(target));
 });
 
 test('bounded readback publishes every chunk including a partial tail and zero bytes', t => {

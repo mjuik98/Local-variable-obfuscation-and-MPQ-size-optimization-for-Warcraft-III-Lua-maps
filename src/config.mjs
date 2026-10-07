@@ -72,7 +72,7 @@ export function resolveConfig(input = {}) {
         assert(!targets.some(name => kept.has(name)), 'cleanup.editorBlock cannot keep a blocked war3map.wtg or war3map.wct');
     }
     const levels = result.compression.levels;
-    assert(Array.isArray(levels) && levels.length > 0 && levels.length <= 10 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'compression.levels must contain zlib levels 0..9');
+    assert(Array.isArray(levels) && levels.length > 0 && levels.length <= 10 && Array.from(levels).every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'compression.levels must contain zlib levels 0..9');
     result.compression.levels = [...new Set(levels)].sort((a, b) => a - b);
     result.compression.strategies = normalizeCompressionStrategies(result.compression.strategies);
     const shift = result.compression.sectorSizeShift;

@@ -13,7 +13,7 @@ const SUPPORTED_FLAGS = new Set([0x80000000, 0x80000200]);
 function snapshot(input, label) {
     assert(Buffer.isBuffer(input), label + ' map must be a Buffer');
     const signature = input.subarray(0, 4);
-    assert(signature.equals(Buffer.from([77, 80, 81, 26])) || signature.toString('ascii') === 'HM3W', label + ' must be a raw MPQ or HM3W-prefixed map');
+    assert(signature.equals(Buffer.from([77, 80, 81, 26])) || signature.equals(Buffer.from('HM3W')), label + ' must be a raw MPQ or HM3W-prefixed map');
     const map = openMap(input);
     map.validate();
     // Validate attributes and all existing MPQ preservation invariants without

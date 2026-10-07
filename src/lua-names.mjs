@@ -172,6 +172,7 @@ export function analyzeClosedTables(resolved, globals) {
     for (const binding of resolved.bindings) if (!binding.implicit) variables.push({nodes: binding.nodes, declaration: binding.nodes[0]});
     for (const variable of variables) {
         const fields = new Map();
+        let methodCount = 0;
         const field = name => {
             let entry = fields.get(name);
             if (!entry) fields.set(name, entry = {nodes: [], methods: [], plain: false, colonCalls: false});
@@ -191,7 +192,7 @@ export function analyzeClosedTables(resolved, globals) {
             const entry = field(parent.identifier.name), owner = parents.get(parent);
             entry.nodes.push(parent.identifier);
             if (parent.indexer !== ':') entry.plain = true;
-            else if (owner?.type === 'FunctionDeclaration' && owner.identifier === parent) entry.methods.push(owner);
+            else if (owner?.type === 'FunctionDeclaration' && owner.identifier === parent) { entry.methods.push(owner); methodCount++; }
             else entry.colonCalls = true;
             return true;
         };
@@ -208,12 +209,19 @@ export function analyzeClosedTables(resolved, globals) {
             if (!closed) break;
         }
         const visited = new Set();
+        let queuedMethods = methodCount;
         for (let pending = closed ? [...fields.values()].flatMap(entry => entry.methods) : []; closed && pending.length;) {
             const method = pending.pop();
             if (visited.has(method)) continue;
             visited.add(method);
             for (const node of selfNodes.get(method) ?? []) if (!(closed = member(node))) break;
-            pending = [...fields.values()].flatMap(entry => entry.methods).filter(item => !visited.has(item));
+            // Ordinary methods are all known before checking self. Rebuild
+            // only if a nested `function self:method()` discovered another,
+            // retaining field order without scanning every field per method.
+            if (methodCount !== queuedMethods) {
+                pending = [...fields.values()].flatMap(entry => entry.methods).filter(item => !visited.has(item));
+                queuedMethods = methodCount;
+            }
         }
         if (closed && [...fields.values()].every(entry => entry.methods.length ? !entry.plain : !entry.colonCalls) && fields.size) {
             tables.push(new Map([...fields].map(([name, entry]) => [name, entry.nodes])));

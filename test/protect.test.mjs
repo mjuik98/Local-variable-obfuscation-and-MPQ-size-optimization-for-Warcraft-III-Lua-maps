@@ -257,6 +257,16 @@ test('raw MPQ maps are protected with no prefix added and the input remains unch
     for (const name of ['war3map.w3i', 'war3map.w3e']) assert.deepEqual(after.read(name), openMap(source).read(name));
 });
 
+test('map prefix signatures are compared as exact bytes instead of masked ASCII', () => {
+    for (let index = 0; index < 4; index++) {
+        const source = createLuaMap();
+        source[index] |= 0x80;
+        const before = Buffer.from(source);
+        assert.throws(() => protectMap(source), /Expected a raw MPQ or HM3W/);
+        assert.deepEqual(source, before);
+    }
+});
+
 test('malformed UTF-8, Lua syntax and missing or duplicated top-level entry points are rejected', () => {
     const invalid = Buffer.concat([Buffer.from('function config() end\nfunction main() end\n--'), Buffer.from([0xc3, 0x28])]);
     assert.throws(() => protectMap(createLuaMap({ script: invalid })), /encoded data|UTF-8/);

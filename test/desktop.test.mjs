@@ -49,6 +49,22 @@ test('desktop worker forwards validation failures without publishing output', as
     assert(!fs.existsSync(map.output));
 });
 
+test('uncloneable requests leave the desktop session available for a subsequent valid request', async t => {
+    const session = createDesktopSession();
+    t.after(() => session.close());
+    assert.throws(() => session.run({ action: 'settings', overrides: { callback() {} } }), /clone/i);
+    const result = await session.run({ action: 'settings', preset: 'size' }).completion;
+    assert(result.ok, result.error);
+    assert.equal(result.config.lua.renameLocals, false);
+});
+
+test('one-shot desktop jobs release their worker when posting the request fails', { timeout: 10000 }, () => {
+    const source = 'import { startDesktopJob } from ' + JSON.stringify(new URL('../src/desktop.mjs', import.meta.url).href) + ';' +
+        'try { startDesktopJob({ action: "settings", overrides: { callback() {} } }); process.exitCode = 1; } catch (error) { if (error.name !== "DataCloneError") throw error; }';
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    assert.equal(child.status, 0, child.stderr || child.error?.message);
+});
+
 test('desktop cleanup refusal shows Korean contract instructions and keeps the map untouched', async t => {
     const map = fixture(t);
     const bytes = createLuaMap({ script: 'function config() end\nfunction main() Preloader(savePath) end',

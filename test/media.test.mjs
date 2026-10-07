@@ -49,6 +49,14 @@ test('malformed or incomplete WAV files are left unchanged', () => {
     for (const bytes of [truncated, wav(info, samples), wav(format, info), Buffer.from('RIFX'), Buffer.concat([wav(format, info, samples), Buffer.alloc(2)])]) {
         assert.equal(stripMediaMetadata('effect.wav', bytes), null);
     }
+    const truncatedExtension = Buffer.alloc(18);
+    format.subarray(8).copy(truncatedExtension);
+    truncatedExtension.writeUInt16LE(4, 16);
+    for (const chunks of [[chunk('fmt ', Buffer.alloc(0)), info, samples],
+        [chunk('fmt ', format.subarray(8, 23)), info, samples],
+        [chunk('fmt ', truncatedExtension), info, samples], [format, format, info, samples], [samples, format, info]]) {
+        assert.equal(stripMediaMetadata('effect.wav', wav(...chunks)), null, 'Malformed format descriptions are preserved');
+    }
 });
 
 test('MP3 ID3 tags are removed only when the rest is a complete chain of audio frames', () => {
@@ -63,6 +71,29 @@ test('MP3 ID3 tags are removed only when the rest is a complete chain of audio f
     unsynchronised[9] = 0x80;
     assert.equal(stripMediaMetadata('theme.mp3', Buffer.concat([unsynchronised, audio])), null);
     assert.equal(stripMediaMetadata('theme.ogg', Buffer.concat([id3v2(Buffer.alloc(4)), audio])), null, 'Other formats are not touched');
+});
+
+test('unknown ID3 versions, reserved flags and inconsistent footers are preserved', () => {
+    for (const [position, value] of [[3, 1], [3, 5], [4, 0xff], [5, 1]]) {
+        const tag = id3v2(Buffer.alloc(4));
+        tag[position] = value;
+        assert.equal(stripMediaMetadata('theme.mp3', Buffer.concat([tag, audio, id3v1])), null);
+    }
+    for (const position of [14, 17, 19, 23]) {
+        const tag = id3v2(Buffer.alloc(4), true);
+        tag[position] ^= 1;
+        assert.equal(stripMediaMetadata('theme.mp3', Buffer.concat([tag, audio])), null, 'A footer must match its header');
+    }
+    const missingFooter = id3v2(Buffer.alloc(4));
+    missingFooter[5] = 0x10;
+    assert.equal(stripMediaMetadata('theme.mp3', Buffer.concat([missingFooter, audio])), null, 'Audio bytes cannot stand in for a footer');
+    for (const version of [2, 3]) {
+        const tag = id3v2(Buffer.alloc(4));
+        tag[3] = version;
+        assert.deepEqual(stripMediaMetadata('theme.mp3', Buffer.concat([tag, audio])), audio);
+        tag[5] = 0x10;
+        assert.equal(stripMediaMetadata('theme.mp3', Buffer.concat([tag, Buffer.alloc(10), audio])), null, 'Older versions have no footer flag');
+    }
 });
 
 test('protection strips listed audio metadata only when selected and keeps other files', () => {

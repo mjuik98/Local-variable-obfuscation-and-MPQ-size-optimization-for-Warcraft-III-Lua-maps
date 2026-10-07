@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { planCleanup } from '../src/cleanup.mjs';
-import { parseLua } from '../src/lua.mjs';
+import { parseLua, prepareLua } from '../src/lua.mjs';
 import { openMap } from '../src/mpq.mjs';
 import { resolveConfig } from '../src/config.mjs';
 import { createLuaMap, createImports } from './map-fixture.mjs';
@@ -28,6 +28,20 @@ function fixture(statement = 'Preloader(savePath); local native = _G[nativeName]
 
 const options = overrides => resolveConfig({ cleanup: { editor: true, development: true, ...overrides } }).cleanup;
 const plan = (value, selected = options()) => planCleanup(value.map, value.ast, selected, value.context);
+
+test('prepared cleanup shares source bindings while preserving deletion and blocking permissions', () => {
+    const value = fixture(), code = value.context.scriptBytes.toString('utf8'), prepared = prepareLua(code);
+    const context = { ...value.context, code, prepared };
+    const selected = options({ editor: false, editorBlock: true });
+    assert.deepEqual(planCleanup(value.map, prepared.ast, selected, context), plan(value, selected));
+    assert.throws(() => planCleanup(value.map, prepared.ast, { ...selected, editorBlockAcceptDynamic: true },
+        { code, prepared }), /Preloader/,
+    'Accepting dynamic blocking must not grant deletion permissions');
+    assert.doesNotThrow(() => planCleanup(value.map, prepared.ast,
+        { ...selected, development: false, editorBlockAcceptDynamic: true }, { code, prepared }));
+    assert.throws(() => planCleanup(value.map, value.ast, selected, context), /Prepared cleanup AST does not match/);
+    assert.throws(() => planCleanup(value.map, prepared.ast, selected, { ...context, code: code + '\n' }), /Prepared Lua source does not match/);
+});
 
 test('explicit dependency contracts permit reviewed dynamic file access only for the exact input', () => {
     const value = fixture(), before = Buffer.from(value.context.inputBytes);
