@@ -129,7 +129,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `protect` | 기본 보호 | local 이름·공백 최적화, 파일 보존, 문자열 숨김 끔 |
 | `distribution` | 배포 준비 | 기본 보호 + 알려진 에디터·개발 파일 정리; 정리를 켜면 정확한 입력의 계약 필요 |
 | `hardened` | 보호 강화 | seed 기반 local 이름 변경 + 런타임 문자열 복원; 파일 보존·VM 자동 선택 없음 |
-| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + `(listfile)` 삭제 + 64 KiB sector; 파일 정리는 별도 |
+| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + 모든 리터럴 런타임 숨김 + `(listfile)` 삭제 + 64 KiB sector; 파일 정리는 별도 |
 
 설정 우선순위는 기본값 → 프리셋 → JSON → CLI 또는 화면의 명시적 선택이다. 프리셋을 생략하면 기존 기본 동작을 사용한다. JSON 설정은 덮어쓰기 전에 엄격하게 검증하며 잘못된 값을 CLI로 가리지 않는다. 반복 보존·제외·VM 선택 옵션은 JSON 배열에 추가된다. `--no-vm`은 합친 VM 목록을 모두 비우며 다른 VM 선택보다 우선한다. `distribution --no-cleanup`은 파일 정리를 해제한다. `hardened`와 `maximum`에서만 문자열 숨김을 기본으로 켠다. 화면의 문자열 체크박스가 최종 활성 여부를 결정한다.
 

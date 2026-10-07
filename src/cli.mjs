@@ -152,6 +152,9 @@ export function parseArguments(args) {
     assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data') || seen.has('--block-editor') || seen.has('--block-editor-accept-dynamic'))), '--no-cleanup conflicts with cleanup options');
     assert(!(seen.has('--hide-strings') && seen.has('--no-hide-strings')), '--hide-strings conflicts with --no-hide-strings');
     assert(!(seen.has('--string-mode') && seen.has('--no-runtime-strings')), '--string-mode conflicts with --no-runtime-strings');
+    // Escape mode cannot keep a preset's all-literal scope; an explicit
+    // --hide-all-strings still reports the conflict.
+    if (parsed.overrides.strings.mode === 'escape' && !seen.has('--hide-all-strings')) parsed.overrides.strings.allLiterals = false;
     if (!parsed.help) {
         if (parsed.showSettings) {
             assert(!parsed.input && !parsed.output && !parsed.check && !parsed.compare && !parsed.details && !parsed.reviewCleanup && !parsed.previousInput && !parsed.contractOutput && !parsed.cleanupContractPath, '--show-settings accepts only preset and transformation settings');

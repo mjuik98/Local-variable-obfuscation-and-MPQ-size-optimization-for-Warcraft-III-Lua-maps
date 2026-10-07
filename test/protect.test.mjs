@@ -405,6 +405,6 @@ end
     // Engine stubs stand in for the natives; the protected chunk runs unchanged after them.
     const stubs = 'function FourCC(value) return string.unpack(">I4", value) end function ExecuteFunc(name) return _G[name]() end\n';
     assert.deepEqual(luaResultBytes(stubs + output), luaResultBytes(stubs + script));
-    const standard = protectMap(createLuaMap({ script }), resolveSettings({ preset: 'maximum', overrides: { lua: { foldFourCC: false } } }).config);
+    const standard = protectMap(createLuaMap({ script }), resolveSettings({ preset: 'maximum', overrides: { strings: { allLiterals: false }, lua: { foldFourCC: false } } }).config);
     assert(result.summary.strings.encodedLiterals > standard.summary.strings.encodedLiterals, 'The experimental scope hides more literals');
 });

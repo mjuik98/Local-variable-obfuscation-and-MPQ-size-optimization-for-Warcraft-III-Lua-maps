@@ -149,3 +149,18 @@ test('a distribution preset needs no contract for editor blocking with accepted 
     const reviewed = resolveSettings({ preset: 'distribution', overrides: { cleanup: { editor: false, development: false, editorBlock: true } } });
     assert.equal(reviewed.preset.requiresCleanupContract, true);
 });
+
+test('maximum hides every eligible literal and escape mode switches the scope off', async () => {
+    const { parseArguments } = await import('../src/cli.mjs');
+    assert.equal(resolveSettings({ preset: 'maximum' }).config.strings.allLiterals, true);
+    assert.equal(resolveSettings({ preset: 'hardened' }).config.strings.allLiterals, false);
+    for (const options of [['--no-runtime-strings'], ['--string-mode', 'escape']]) {
+        const parsed = parseArguments(['--show-settings', '--preset', 'maximum', ...options]);
+        const { config } = resolveSettings({ preset: 'maximum', overrides: parsed.overrides });
+        assert.deepEqual([config.strings.mode, config.strings.allLiterals], ['escape', false]);
+    }
+    const explicit = parseArguments(['--show-settings', '--preset', 'maximum', '--no-runtime-strings', '--hide-all-strings']);
+    assert.throws(() => resolveSettings({ preset: 'maximum', overrides: explicit.overrides }), /requires strings\.mode runtime/);
+    const narrow = parseArguments(['--show-settings', '--preset', 'maximum', '--no-hide-all-strings']);
+    assert.equal(resolveSettings({ preset: 'maximum', overrides: narrow.overrides }).config.strings.allLiterals, false);
+});
