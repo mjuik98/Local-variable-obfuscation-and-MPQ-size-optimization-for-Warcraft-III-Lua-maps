@@ -24,7 +24,7 @@ namespace WarcraftLuaProtectorDesktop
 
     internal sealed class AdvancedSettingsForm : Form
     {
-        private CheckBox minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, allLiterals, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, blockEditor, blockAcceptDynamic, compress, zopfli;
+        private CheckBox minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, allLiterals, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, blockEditor, blockAcceptDynamic, compress, zopfli, stripMedia;
         private CheckBox disableVm;
         private ComboBox nameMode, stringMode, sectorSize, blockFormat, blockFiles;
         private static readonly string[] BlockFormatIds = { "version", "truncated", "empty" };
@@ -60,7 +60,8 @@ namespace WarcraftLuaProtectorDesktop
             blockEditor = Flag("World Editor 열기 차단 (실험 · 트리거 파일 대체)", EnabledValue(effective, "cleanup", "editorBlock"));
             compress = Flag("파일 재압축", EnabledValue(effective, "compression", "enabled"));
             zopfli = Flag("Zopfli 압축 후보 (느림)", EnabledValue(effective, "compression", "zopfli"));
-            foreach (CheckBox check in new CheckBox[] { minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, allLiterals, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, blockEditor, compress, zopfli }) flags.Controls.Add(check);
+            stripMedia = Flag("오디오 메타데이터 제거 (실험 · WAV 정보 청크 · MP3 ID3)", EnabledValue(effective, "compression", "stripMediaMetadata"));
+            foreach (CheckBox check in new CheckBox[] { minify, rename, renameGlobals, renameFields, hideNatives, foldFourCC, allLiterals, cleanEditor, cleanDevelopment, cleanEditorData, removeListfile, blockEditor, compress, zopfli, stripMedia }) flags.Controls.Add(check);
             blockFormat = Choice(new[] { "차단 형태: 버전 (version · 에디터 비정상 종료)", "차단 형태: 잘림 (truncated · 에디터 비정상 종료)", "차단 형태: 빈 파일 (empty · 권장)" }, BlockFormatIds, Convert.ToString(SectionValue(effective, "cleanup", "editorBlockFormat")));
             blockFiles = Choice(new[] { "대상: wtg · wct 모두", "대상: wtg만", "대상: wct만" }, BlockFileIds, Convert.ToString(SectionValue(effective, "cleanup", "editorBlockFiles")));
             blockFormat.Enabled = blockFiles.Enabled = blockEditor.Checked; blockEditor.CheckedChanged += delegate { blockFormat.Enabled = blockFiles.Enabled = blockEditor.Checked; };
@@ -150,7 +151,7 @@ namespace WarcraftLuaProtectorDesktop
                     { "renameGlobals", renameGlobals.Checked }, { "renameFields", renameFields.Checked }, { "hideNatives", hideNatives.Checked }, { "foldFourCC", foldFourCC.Checked }, { "keepGlobals", keptGlobals } } },
                 { "strings", new Dictionary<string, object> { { "keep", keptStrings }, { "mode", stringMode.SelectedIndex == 1 ? "runtime" : "escape" }, { "allLiterals", allLiterals.Checked } } },
                 { "cleanup", new Dictionary<string, object> { { "editor", cleanEditor.Checked }, { "development", cleanDevelopment.Checked }, { "editorData", cleanEditorData.Checked }, { "listfile", removeListfile.Checked }, { "editorBlock", blockEditor.Checked }, { "editorBlockFormat", BlockFormatIds[blockFormat.SelectedIndex] }, { "editorBlockFiles", BlockFileIds[blockFiles.SelectedIndex] }, { "editorBlockAcceptDynamic", blockAcceptDynamic.Checked }, { "keepFiles", keptFiles } } },
-                { "compression", new Dictionary<string, object> { { "enabled", compress.Checked }, { "levels", chosenLevels.ToArray() }, { "strategies", chosenStrategies.ToArray() }, { "excludeFiles", excludedFiles }, { "sectorSizeShift", sectorSize.SelectedIndex == 0 ? null : (object)(sectorSize.SelectedIndex + 2) }, { "zopfli", zopfli.Checked } } }
+                { "compression", new Dictionary<string, object> { { "enabled", compress.Checked }, { "levels", chosenLevels.ToArray() }, { "strategies", chosenStrategies.ToArray() }, { "excludeFiles", excludedFiles }, { "sectorSizeShift", sectorSize.SelectedIndex == 0 ? null : (object)(sectorSize.SelectedIndex + 2) }, { "zopfli", zopfli.Checked }, { "stripMediaMetadata", stripMedia.Checked } } }
             };
         }
         private static void ValidateIdentifier(string value) { if (!System.Text.RegularExpressions.Regex.IsMatch(value, "^[A-Za-z_][A-Za-z0-9_]*$")) throw new ArgumentException("local · 전역 · VM 함수 이름은 원본 Lua 식별자여야 합니다: " + value); }
@@ -638,6 +639,7 @@ namespace WarcraftLuaProtectorDesktop
             report.AppendLine("Lua 크기: " + FormatBytes(Value(lua, "inputBytes")) + " → " + FormatBytes(Value(lua, "outputBytes")));
             report.AppendLine("local 이름 변경: " + TextValue(lua, "renamedLocals") + "개   문자열 숨김: " + TextValue(strings, "encodedLiterals") + "개   파일 정리: " + (removed == null ? 0 : removed.Count) + "개");
             IList blocked = Value(summary, "editorBlockedFiles") as IList; if (blocked != null && blocked.Count > 0) { List<string> blockedNames = new List<string>(); foreach (object value in blocked) blockedNames.Add(Convert.ToString(value)); report.AppendLine("World Editor 열기 차단: " + String.Join(", ", blockedNames.ToArray()) + " 대체 · 형태 " + TextValue(summary, "editorBlockFormat") + " (실험 · 에디터와 게임에서 직접 확인 필요)"); }
+            IDictionary<string, object> media = Value(summary, "media") as IDictionary<string, object>; if (media != null) { IList stripped = Value(media, "strippedFiles") as IList; report.AppendLine("오디오 메타데이터 제거: " + (stripped == null ? 0 : stripped.Count) + "개 파일 · " + FormatBytes(Value(media, "savedBytes")) + " (실험 · 게임에서 소리 확인 필요)"); }
             string mode = TextValue(strings, "mode"); if (mode.Length > 0) report.AppendLine("문자열 모드: " + mode + (mode == "runtime" ? " · 고유 복원 문자열 " + NumberValue(strings, "uniqueRuntimeLiterals") + "개 (실험)" : ""));
             report.AppendLine("VM 함수: " + NumberValue(vm, "virtualizedFunctions") + "개" + (NumberValue(vm, "virtualizedFunctions") > 0 ? " · 명령 " + NumberValue(vm, "instructions") + "개 (실험 · 게임 검증 필요)" : ""));
             IDictionary<string, object> natives = Value(summary, "natives") as IDictionary<string, object>;
@@ -683,9 +685,9 @@ namespace WarcraftLuaProtectorDesktop
             object shift = Value(compression, "sectorSizeShift");
             text.AppendLine("MPQ 섹터 크기: " + (shift == null ? "입력 유지" : (512 << Convert.ToInt32(shift)) / 1024 + " KiB (전체 재압축)"));
             if (TextValue(lua, "nameMode") == "seeded" || (BoolValue(strings, "enabled") && TextValue(strings, "mode") == "runtime") || (Value(lua, "vmFunctions") as IList) != null && ((IList)Value(lua, "vmFunctions")).Count > 0 ||
-                BoolValue(lua, "renameGlobals") || BoolValue(lua, "renameFields") || BoolValue(lua, "hideNatives") || BoolValue(lua, "foldFourCC") || BoolValue(cleanup, "listfile") || BoolValue(cleanup, "editorBlock") || BoolValue(strings, "allLiterals") || shift != null) text.AppendLine("보호 강화 · 섹터 크기 옵션은 실험 단계입니다. 실제 게임 동작과 멀티플레이 검증이 필요합니다.");
+                BoolValue(lua, "renameGlobals") || BoolValue(lua, "renameFields") || BoolValue(lua, "hideNatives") || BoolValue(lua, "foldFourCC") || BoolValue(cleanup, "listfile") || BoolValue(cleanup, "editorBlock") || BoolValue(strings, "allLiterals") || BoolValue(compression, "stripMediaMetadata") || shift != null) text.AppendLine("보호 강화 · 섹터 크기 옵션은 실험 단계입니다. 실제 게임 동작과 멀티플레이 검증이 필요합니다.");
             text.AppendLine("에디터 파일 정리: " + OnOff(BoolValue(cleanup, "editor")) + " / 개발 파일 정리: " + OnOff(BoolValue(cleanup, "development")) + " / 에디터 데이터 정리: " + OnOff(BoolValue(cleanup, "editorData")) + " / (listfile) 삭제: " + OnOff(BoolValue(cleanup, "listfile")) + " / 에디터 열기 차단: " + OnOff(BoolValue(cleanup, "editorBlock")) + (BoolValue(cleanup, "editorBlock") ? " (" + TextValue(cleanup, "editorBlockFormat") + " · " + TextValue(cleanup, "editorBlockFiles") + (BoolValue(cleanup, "editorBlockAcceptDynamic") ? " · 계약 없이 직접 확인" : "") + ")" : ""));
-            text.AppendLine("파일 재압축: " + OnOff(BoolValue(compression, "enabled")) + " / 레벨: " + JoinValues(Value(compression, "levels") as IList) + " / 전략: " + JoinValues(Value(compression, "strategies") as IList) + " / Zopfli: " + OnOff(BoolValue(compression, "zopfli")));
+            text.AppendLine("파일 재압축: " + OnOff(BoolValue(compression, "enabled")) + " / 레벨: " + JoinValues(Value(compression, "levels") as IList) + " / 전략: " + JoinValues(Value(compression, "strategies") as IList) + " / Zopfli: " + OnOff(BoolValue(compression, "zopfli")) + " / 오디오 메타데이터 제거: " + OnOff(BoolValue(compression, "stripMediaMetadata")));
             text.AppendLine("보존 local: " + JoinValues(Value(lua, "keepLocals") as IList));
             text.AppendLine("보존 전역: " + JoinValues(Value(lua, "keepGlobals") as IList));
             text.AppendLine("보존 문자열: " + serializer.Serialize(Value(strings, "keep")));

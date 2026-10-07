@@ -60,6 +60,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --keep-sector-size      Keep the input MPQ sector size
 --zopfli                Also try Zopfli zlib streams for compressible sectors (slow)
 --no-zopfli             Use only Node zlib candidates
+--strip-media-metadata  Remove WAV info/padding chunks and MP3 ID3 tags that carry no audio (experimental)
+--no-strip-media-metadata Keep audio files byte for byte
 --keep-local <name>     Preserve a local name (repeatable)
 --keep-file <path>      Preserve a cleanup candidate (repeatable)
 --exclude-compress <path> Skip recompression of an entry (repeatable)
@@ -126,6 +128,9 @@ export function parseArguments(args) {
         } else if (argument === '--zopfli' || argument === '--no-zopfli') {
             assert(!seen.has(argument === '--zopfli' ? '--no-zopfli' : '--zopfli'), '--zopfli conflicts with --no-zopfli');
             unique(argument); parsed.overrides.compression.zopfli = argument === '--zopfli';
+        } else if (argument === '--strip-media-metadata' || argument === '--no-strip-media-metadata') {
+            assert(!seen.has(argument === '--strip-media-metadata' ? '--no-strip-media-metadata' : '--strip-media-metadata'), '--strip-media-metadata conflicts with --no-strip-media-metadata');
+            unique(argument); parsed.overrides.compression.stripMediaMetadata = argument === '--strip-media-metadata';
         } else if (argument === '--no-compress') {
             unique(argument); parsed.overrides.compression.enabled = false;
         } else if (argument === '--hide-all-strings' || argument === '--no-hide-all-strings') {

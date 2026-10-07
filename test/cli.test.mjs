@@ -442,3 +442,9 @@ test('CLI accepts dynamic access for editor blocking only when stated explicitly
     assert.equal(parseArguments(['--show-settings', '--block-editor', '--block-editor-accept-dynamic']).overrides.cleanup.editorBlockAcceptDynamic, true);
     assert.throws(() => parseArguments(['--show-settings', '--block-editor-accept-dynamic', '--no-cleanup']), /conflicts/);
 });
+
+test('CLI toggles experimental audio metadata stripping', () => {
+    assert.equal(parseArguments(['--show-settings', '--strip-media-metadata']).overrides.compression.stripMediaMetadata, true);
+    assert.equal(parseArguments(['--show-settings', '--no-strip-media-metadata']).overrides.compression.stripMediaMetadata, false);
+    assert.throws(() => parseArguments(['--show-settings', '--strip-media-metadata', '--no-strip-media-metadata']), /conflicts/);
+});

@@ -18,7 +18,7 @@ export const DEFAULT_CONFIG = Object.freeze({
         renameGlobals: false, renameFields: false, keepGlobals: Object.freeze([]), hideNatives: false, foldFourCC: false }),
     strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape', allLiterals: false }),
     cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', editorBlockAcceptDynamic: false, keepFiles: Object.freeze([]) }),
-    compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false }),
+    compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false, stripMediaMetadata: false }),
 });
 
 function record(value, label) {
@@ -45,7 +45,7 @@ export function resolveConfig(input = {}) {
         assert(Object.keys(supplied).every(key => Object.hasOwn(defaults, key)), 'Unknown ' + section + ' option');
         result[section] = { ...defaults, ...supplied };
     }
-    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock', 'editorBlockAcceptDynamic']], ['compression', ['enabled', 'zopfli']]]) {
+    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock', 'editorBlockAcceptDynamic']], ['compression', ['enabled', 'zopfli', 'stripMediaMetadata']]]) {
         for (const key of keys) assert(typeof result[section][key] === 'boolean', section + '.' + key + ' must be boolean');
     }
     result.lua.keepLocals = names(result.lua.keepLocals, 'lua.keepLocals', true);

@@ -112,6 +112,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--no-compress` | 재압축 최적화 해제; MPQ 빈 공간 회수는 유지 |
 | `--sector-size-shift N` | MPQ sector를 `512 × 2^N` 바이트(N = 3..8)로 바꾸고 전체 재압축 (실험) |
 | `--keep-sector-size` | 설정 파일에서 지정한 sector 크기 변경 해제 |
+| `--strip-media-metadata` / `--no-strip-media-metadata` | WAV 정보·채움 청크와 MP3 ID3 태그처럼 소리가 아닌 데이터만 제거 / 보존 (실험) |
 | `--zopfli` / `--no-zopfli` | 압축이 잘 되는 sector에 Zopfli zlib 후보 추가 켜기 / 끄기 (느림) |
 | `--keep-local Name` | 해당 local 이름의 모든 바인딩 보존; 반복 지정 가능 |
 | `--keep-file Path` | 정리 후보 보존; 반복 지정 가능 |
@@ -151,7 +152,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --check --details --compression-strategy 
 ## 상세 문서
 
 - [Lua 보호 옵션](docs/protection.md): 문자열 숨김(escape·runtime), seed 이름, 선택적 함수 VM, 전역·닫힌 테이블 필드 이름 변경, 엔진·라이브러리 함수 숨김, `FourCC` 치환과 LoTKT 2.4E 측정 결과
-- [MPQ 구조 옵션](docs/archive.md): sector 크기 변경, `(listfile)` 삭제, 병렬 섹터 압축의 메모리와 대기 동작
+- [MPQ 구조 옵션](docs/archive.md): sector 크기 변경, `(listfile)` 삭제, 병렬 섹터 압축의 메모리와 대기 동작, 오디오 메타데이터 제거
 - [파일 정리와 검토 계약](docs/cleanup.md): 에디터·개발·에디터 데이터 정리, 검토 계약 작성·재검토와 LoTKT 계약 파일
 - [게임 검증 기록과 체크리스트](docs/verification.md): 실제 Warcraft III에서 확인한 결과와 남은 확인 항목
 
