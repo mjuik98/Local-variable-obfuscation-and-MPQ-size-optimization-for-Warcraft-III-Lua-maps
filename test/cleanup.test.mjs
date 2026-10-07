@@ -32,9 +32,9 @@ const plan = (value, selected = options()) => planCleanup(value.map, value.ast, 
 test('explicit dependency contracts permit reviewed dynamic file access only for the exact input', () => {
     const value = fixture(), before = Buffer.from(value.context.inputBytes);
     assert.throws(() => planCleanup(value.map, value.ast, options()), /cleanup cannot prove/);
-    assert.deepEqual(plan(value), { names: CANDIDATES, imports: null });
+    assert.deepEqual(plan(value), { names: CANDIDATES, imports: null, blocked: [] });
     assert.deepEqual(value.context.inputBytes, before);
-    assert.deepEqual(planCleanup(value.map, value.ast, resolveConfig().cleanup, value.context), { names: [], imports: null }, 'A supplied contract never enables cleanup itself');
+    assert.deepEqual(planCleanup(value.map, value.ast, resolveConfig().cleanup, value.context), { names: [], imports: null, blocked: [] }, 'A supplied contract never enables cleanup itself');
 });
 
 test('Preloader refusal explains the desktop contract remedy without allowing unreviewed deletion', () => {
@@ -49,7 +49,7 @@ test('Preloader refusal explains the desktop contract remedy without allowing un
         return true;
     });
     assert.deepEqual(plan(value, selected).names, ['war3map.wtg']);
-    assert.deepEqual(planCleanup(value.map, value.ast, options({ keepFiles: CANDIDATES })), { names: [], imports: null });
+    assert.deepEqual(planCleanup(value.map, value.ast, options({ keepFiles: CANDIDATES })), { names: [], imports: null, blocked: [] });
 });
 
 test('contracts require exact map and Lua hashes even when cleanup is disabled', () => {
@@ -168,4 +168,46 @@ test('listfile removal runs after every stage and keeps all entries readable by 
     assert(result.summary.removedFiles.includes('(listfile)'));
     assert.deepEqual(result.summary.savings.stages.map(stage => stage.id).slice(-2), ['sectors', 'listfile']);
     assert.equal(output.inspect().sectorSize, 4096, 'The sector rebuild used the listfile before removal');
+});
+
+test('editor blocking replaces only the two trigger files with unsupported data when selected', async () => {
+    const { protectMap } = await import('../src/protect.mjs');
+    const { editorBlockContents } = await import('../src/cleanup.mjs');
+    const script = 'function config() end\nfunction main() return "ok" end\n';
+    const source = createLuaMap({ script, extraEntries: [['war3map.wtg', Buffer.from('WTG!\x07\0\0\0triggers')], ['war3map.wct', Buffer.from('custom text')],
+        ['war3mapImported\\asset.bin', Buffer.from('asset')]], mpq: { attributes: true } });
+    const original = openMap(source);
+    const unchanged = openMap(protectMap(source).bytes);
+    assert.deepEqual(unchanged.read('war3map.wtg'), original.read('war3map.wtg'), 'Editor blocking is off by default');
+    const result = protectMap(source, { cleanup: { editorBlock: true } }), output = openMap(result.bytes);
+    assert.deepEqual(result.summary.editorBlockedFiles, ['war3map.wtg', 'war3map.wct']);
+    assert.deepEqual(result.summary.removedFiles, []);
+    assert.deepEqual(output.read('war3map.wtg'), Buffer.from([0x57, 0x54, 0x47, 0x21, 0xff, 0xff, 0xff, 0xff]));
+    assert.deepEqual(output.read('war3map.wct'), Buffer.from([0xff, 0xff, 0xff, 0xff]));
+    assert.deepEqual(output.read('war3map.wtg'), editorBlockContents('WAR3MAP.WTG'));
+    for (const name of ['war3map.w3i', 'war3map.w3e', 'war3mapImported\\asset.bin']) assert.deepEqual(output.read(name), original.read(name), name);
+    // Without recompression, every other packed payload and its metadata is kept.
+    const plain = protectMap(source, { cleanup: { editorBlock: true }, compression: { enabled: false } });
+    assert(original.verifyPreserved(plain.bytes, { changedNames: ['war3map.lua', 'war3map.wtg', 'war3map.wct'] }));
+    assert.match(result.summary.savings.stages[0].label, /에디터 차단/);
+    const repeated = protectMap(result.bytes, { cleanup: { editorBlock: true } });
+    assert.deepEqual(openMap(repeated.bytes).read('war3map.wtg'), editorBlockContents('war3map.wtg'), 'Blocking an already blocked map is stable');
+    const listless = protectMap(source, { cleanup: { editorBlock: true, listfile: true } });
+    assert.deepEqual(openMap(listless.bytes).read('war3map.wct'), editorBlockContents('war3map.wct'));
+});
+
+test('editor blocking refuses missing trigger files, conflicting cleanup and unverified references', async () => {
+    const { protectMap } = await import('../src/protect.mjs');
+    const { editorBlockContents } = await import('../src/cleanup.mjs');
+    const triggers = [['war3map.wtg', Buffer.from('triggers')], ['war3map.wct', Buffer.from('text')]];
+    assert.throws(() => protectMap(createLuaMap({ extraEntries: [triggers[0]] }), { cleanup: { editorBlock: true } }), /requires war3map\.wct/);
+    assert.throws(() => protectMap(createLuaMap(), { cleanup: { editorBlock: true } }), /requires war3map\.wtg/);
+    assert.throws(() => resolveConfig({ cleanup: { editorBlock: true, editor: true } }), /turn off cleanup\.editor/);
+    assert.throws(() => resolveConfig({ cleanup: { editorBlock: true, keepFiles: ['War3Map.Wct'] } }), /cannot keep/);
+    assert.throws(() => resolveConfig({ cleanup: { editorBlock: 'yes' } }), /editorBlock must be boolean/);
+    const referencing = createLuaMap({ script: 'function config() end\nfunction main() return "war3map.wtg" end\n', extraEntries: triggers });
+    assert.throws(() => protectMap(referencing, { cleanup: { editorBlock: true } }), /references cleanup candidate/);
+    const preloader = createLuaMap({ script: 'function config() end\nfunction main() Preloader("x") end\n', extraEntries: triggers });
+    assert.throws(() => protectMap(preloader, { cleanup: { editorBlock: true } }), /Preloader/);
+    assert.throws(() => editorBlockContents('war3map.w3i'), /Not an editor trigger file/);
 });

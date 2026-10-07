@@ -73,6 +73,6 @@ export function resolveSettings({ preset = null, configuration = {}, overrides =
     }
     if (noVm) merged.lua.vmFunctions = [];
     const config = resolveConfig(merged), info = selected ? metadata(selected) : null;
-    if (info) info.requiresCleanupContract = selected.requiresCleanupContract && (config.cleanup.editor || config.cleanup.development || config.cleanup.editorData);
+    if (info) info.requiresCleanupContract = selected.requiresCleanupContract && (config.cleanup.editor || config.cleanup.development || config.cleanup.editorData || config.cleanup.editorBlock);
     return { config, preset: info };
 }

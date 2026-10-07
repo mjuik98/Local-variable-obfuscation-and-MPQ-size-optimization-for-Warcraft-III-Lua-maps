@@ -36,6 +36,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --no-vm                Clear every selected VM function, including JSON selections
 --hide-strings          Hide eligible literals using the selected string mode
 --no-hide-strings       Disable string encoding set in configuration
+--hide-all-strings      Widen runtime string hiding to rawcodes, orders, callbacks, paths and formats (experimental)
+--no-hide-all-strings   Keep the default runtime string scope
 --keep-string <value>   Preserve a decoded string value (repeatable)
 --keep-string=<value>   Preserve any value, including empty or -- prefixed strings
 --no-cleanup            Preserve editor and development files
@@ -44,6 +46,8 @@ const USAGE = `Usage: w3lua-protect <input.w3x|input.w3m> --output <new-map> [op
 --clean-editor-data     Remove editor region, camera, sound data and the import manifest if references can be checked
 --remove-listfile       Remove the MPQ (listfile) after every other stage (experimental)
 --keep-listfile         Keep the MPQ (listfile)
+--block-editor          Replace the editor trigger files with unsupported data (experimental)
+--no-block-editor       Keep the editor trigger files readable
 --cleanup-contract <file.json> Use a reviewed cleanup contract tied to the exact input
 --review-cleanup        Compare the previous reviewed map with this input; write no map
 --previous-input <map>  Previous input matched by --cleanup-contract
@@ -103,17 +107,23 @@ export function parseArguments(args) {
         } else if (argument === '--no-minify' || argument === '--no-rename') {
             unique(argument); parsed.overrides.lua[argument === '--no-minify' ? 'minify' : 'renameLocals'] = false;
         } else if (argument === '--no-cleanup') {
-            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false, editorData: false });
+            unique(argument); Object.assign(parsed.overrides.cleanup, { editor: false, development: false, editorData: false, editorBlock: false });
         } else if (argument === '--clean-development' || argument === '--clean-editor' || argument === '--clean-editor-data') {
             unique(argument); parsed.overrides.cleanup[argument === '--clean-editor' ? 'editor' : argument === '--clean-editor-data' ? 'editorData' : 'development'] = true;
         } else if (argument === '--remove-listfile' || argument === '--keep-listfile') {
             assert(!seen.has('--remove-listfile') && !seen.has('--keep-listfile'), '--remove-listfile conflicts with --keep-listfile');
             unique(argument); parsed.overrides.cleanup.listfile = argument === '--remove-listfile';
+        } else if (argument === '--block-editor' || argument === '--no-block-editor') {
+            assert(!seen.has(argument === '--block-editor' ? '--no-block-editor' : '--block-editor'), '--block-editor conflicts with --no-block-editor');
+            unique(argument); parsed.overrides.cleanup.editorBlock = argument === '--block-editor';
         } else if (argument === '--zopfli' || argument === '--no-zopfli') {
             assert(!seen.has(argument === '--zopfli' ? '--no-zopfli' : '--zopfli'), '--zopfli conflicts with --no-zopfli');
             unique(argument); parsed.overrides.compression.zopfli = argument === '--zopfli';
         } else if (argument === '--no-compress') {
             unique(argument); parsed.overrides.compression.enabled = false;
+        } else if (argument === '--hide-all-strings' || argument === '--no-hide-all-strings') {
+            assert(!seen.has(argument === '--hide-all-strings' ? '--no-hide-all-strings' : '--hide-all-strings'), '--hide-all-strings conflicts with --no-hide-all-strings');
+            unique(argument); parsed.overrides.strings.allLiterals = argument === '--hide-all-strings';
         } else if (argument === '--hide-strings' || argument === '--no-hide-strings') {
             unique(argument); parsed.overrides.strings.enabled = argument === '--hide-strings';
         } else if (argument.startsWith('--keep-string=')) {
@@ -127,7 +137,7 @@ export function parseArguments(args) {
             parsed.input = argument;
         }
     }
-    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data'))), '--no-cleanup conflicts with cleanup options');
+    assert(!(seen.has('--no-cleanup') && (seen.has('--clean-development') || seen.has('--clean-editor') || seen.has('--clean-editor-data') || seen.has('--block-editor'))), '--no-cleanup conflicts with cleanup options');
     assert(!(seen.has('--hide-strings') && seen.has('--no-hide-strings')), '--hide-strings conflicts with --no-hide-strings');
     assert(!(seen.has('--string-mode') && seen.has('--no-runtime-strings')), '--string-mode conflicts with --no-runtime-strings');
     if (!parsed.help) {
@@ -166,7 +176,7 @@ export function run(args, { stdout = process.stdout, stderr = process.stderr } =
             return 0;
         }
         stdout.write((options.check ? 'Checked in memory' : 'Protected map saved') + ': ' + result.path + '\n');
-        stdout.write('Map bytes: ' + result.summary.inputBytes + ' -> ' + result.summary.outputBytes + '; local names changed: ' + result.summary.lua.renamedLocals + '; strings hidden: ' + result.summary.strings.encodedLiterals + '; string mode: ' + (result.summary.strings.mode ?? result.config.strings.mode) + '; VM functions: ' + (result.summary.vm?.virtualizedFunctions ?? 0) + '; files removed: ' + result.summary.removedFiles.length + '\n');
+        stdout.write('Map bytes: ' + result.summary.inputBytes + ' -> ' + result.summary.outputBytes + '; local names changed: ' + result.summary.lua.renamedLocals + '; strings hidden: ' + result.summary.strings.encodedLiterals + '; string mode: ' + (result.summary.strings.mode ?? result.config.strings.mode) + '; VM functions: ' + (result.summary.vm?.virtualizedFunctions ?? 0) + '; files removed: ' + result.summary.removedFiles.length + '; editor-blocked files: ' + result.summary.editorBlockedFiles.length + '\n');
         const lua = result.summary.lua;
         stdout.write('Global names changed: ' + (lua.renamedGlobals ?? 0) + '; fields changed: ' + (lua.renamedFields ?? 0) + ' in ' + (lua.closedTables ?? 0) +
             ' closed tables; engine functions hidden: ' + (result.summary.natives?.hiddenNatives ?? 0) + '; Lua library functions hidden: ' + (result.summary.natives?.hiddenLibraryFunctions ?? 0) + '; FourCC folded: ' + (result.summary.natives?.foldedFourCC ?? 0) + '; MPQ sector size: ' + result.summary.sectorSize + '\n');

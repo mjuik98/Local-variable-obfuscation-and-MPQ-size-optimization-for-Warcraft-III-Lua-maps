@@ -214,7 +214,7 @@ test('configuration is validated and fresh defaults remain unchanged after calle
     const resolved = resolveConfig({ compression: { levels: [9, 6, 9] }, cleanup: { keepFiles: ['war3map.wtg'] } });
     assert.deepEqual(resolved.compression.levels, [6, 9]);
     resolved.cleanup.keepFiles.push('other.bin'); resolved.lua.keepLocals.push('counter');
-    assert.deepEqual(resolveConfig().cleanup, { editor: false, development: false, editorData: false, listfile: false, keepFiles: [] });
+    assert.deepEqual(resolveConfig().cleanup, { editor: false, development: false, editorData: false, listfile: false, editorBlock: false, keepFiles: [] });
     assert.deepEqual(resolveConfig().lua.keepLocals, []);
     for (const value of [null, [], { unknown: true }, { lua: { typo: true } }, { cleanup: { editor: 1 } }, { compression: { levels: [] } }, { compression: { levels: [10] } }, { cleanup: { keepFiles: ['bad\0path'] } }]) {
         assert.throws(() => resolveConfig(value));
@@ -385,4 +385,26 @@ test('UTF-8 import paths are recompressed and can be excluded by name', () => {
     const excluded = openMap(protectMap(source, { compression: { excludeFiles: ['WAR3MAPIMPORTED/텍스처/한글.BLP'] } }).bytes);
     assert.equal(excluded.inspect().blocks[index].packedSize, compressible.length);
     assert.deepEqual(excluded.read(korean), compressible);
+});
+
+test('all-literal runtime strings combine with the maximum preset and keep callback lookups', async () => {
+    const { resolveSettings } = await import('../src/presets.mjs');
+    const script = String.raw`function config() end
+function Callback() return "callback ran" end
+function main()
+    local id = FourCC("A0EG")
+    local result = ExecuteFunc("Callback")
+    local path = "Models\\Effect.mdx"
+    return id, result, path, string.format("%d|r", 7)
+end
+`;
+    const { config } = resolveSettings({ preset: 'maximum', overrides: { strings: { allLiterals: true }, lua: { foldFourCC: false } } });
+    const result = protectMap(createLuaMap({ script }), config);
+    const output = openMap(result.bytes).read('war3map.lua').toString();
+    for (const hidden of ['A0EG', '"Callback"', 'Effect.mdx', '%d|r', 'callback ran']) assert(!output.includes(hidden), hidden + ' is hidden');
+    // Engine stubs stand in for the natives; the protected chunk runs unchanged after them.
+    const stubs = 'function FourCC(value) return string.unpack(">I4", value) end function ExecuteFunc(name) return _G[name]() end\n';
+    assert.deepEqual(luaResultBytes(stubs + output), luaResultBytes(stubs + script));
+    const standard = protectMap(createLuaMap({ script }), resolveSettings({ preset: 'maximum', overrides: { lua: { foldFourCC: false } } }).config);
+    assert(result.summary.strings.encodedLiterals > standard.summary.strings.encodedLiterals, 'The experimental scope hides more literals');
 });

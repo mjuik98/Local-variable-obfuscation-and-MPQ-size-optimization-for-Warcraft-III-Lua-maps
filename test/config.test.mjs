@@ -102,3 +102,11 @@ test('configuration accepts UTF-8 MPQ paths and folds only ASCII letters', () =>
     // MPQ hashing leaves non-ASCII bytes unchanged, so these are different files.
     assert.notEqual(canonicalPath('é.blp'), canonicalPath('É.blp'));
 });
+
+test('all-literal string hiding is a strict boolean that defaults off and requires runtime mode', () => {
+    assert.equal(resolveConfig().strings.allLiterals, false);
+    assert.equal(resolveConfig({ strings: { mode: 'runtime', allLiterals: true } }).strings.allLiterals, true);
+    assert.equal(resolveConfig({ strings: { allLiterals: true } }).strings.allLiterals, true, 'An inactive scope can be layered before the mode');
+    assert.throws(() => resolveConfig({ strings: { enabled: true, allLiterals: true } }), /requires strings\.mode runtime/);
+    assert.throws(() => resolveConfig({ strings: { mode: 'runtime', allLiterals: 1 } }), /allLiterals must be boolean/);
+});

@@ -59,6 +59,7 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     onProgress('archive');
     const replacements = [['war3map.lua', finalScript]];
     if (cleanup.imports) replacements.push(['war3map.imp', cleanup.imports]);
+    replacements.push(...cleanup.blocked);
     const rewriteOptions = { levels: config.compression.enabled ? config.compression.levels : [0], strategies: config.compression.strategies,
         zopfli: config.compression.enabled && config.compression.zopfli };
     // Each stage reopens its result once; the reader is reused by the savings
@@ -68,7 +69,7 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
         if (bytes !== result) { result = bytes; archive = openMap(result); }
         savings.record(id, label, result, { ...options, map: archive });
     };
-    stage('lua', 'Lua·import 기록 및 MPQ 공간 회수', result, { rewrite: true });
+    stage('lua', cleanup.blocked.length ? 'Lua·import·에디터 차단 기록 및 MPQ 공간 회수' : 'Lua·import 기록 및 MPQ 공간 회수', result, { rewrite: true });
     stage('cleanup', '파일 정리·목록 갱신 및 공간 회수', cleanup.names.length ? archive.remove(cleanup.names) : result, { rewrite: true });
     if (config.compression.enabled) {
         const excluded = new Set(config.compression.excludeFiles.map(canonicalPath));
@@ -102,9 +103,10 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     for (const name of ['war3map.w3i', 'war3map.w3e']) assert(verified.read(name).equals(original.read(name)), 'Required map entry changed: ' + name);
     for (const name of cleanup.names) assert(!verified.has(name), 'Cleanup candidate is still present: ' + name);
     if (config.cleanup.listfile) assert(!verified.has('(listfile)'), 'The MPQ listfile is still present');
+    for (const [name, contents] of cleanup.blocked) assert(verified.read(name).equals(contents), 'Editor block readback mismatch: ' + name);
     return {
         bytes: result,
-        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], mapInfoVersion: info.version,
+        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], editorBlockedFiles: cleanup.blocked.map(([name]) => name), mapInfoVersion: info.version,
             lua: { ...transformed.stats, inputBytes: scriptBytes.length, outputBytes: finalScript.length }, natives: natives.stats, strings: strings.stats, vm: vm.stats,
             sectorSize: verified.inspect().sectorSize, savings: savings.summary(),
             // Compressed bytes depend on the zlib build; record it with the result.

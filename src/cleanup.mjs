@@ -15,6 +15,17 @@ const ENVIRONMENTS = new Set(['_G', '_ENV']);
 const IMPORT_FLAGS = new Set([0, 5, 8, 10, 13]), CUSTOM_IMPORT_FLAGS = new Set([10, 13]);
 export const CLEANUP_CANDIDATES = Object.freeze([...EDITOR_FILES, ...DEVELOPMENT_FILES, ...EDITOR_DATA_FILES]);
 const CANDIDATES = new Set(CLEANUP_CANDIDATES.map(canonicalPath));
+// Experimental editor blocking. Warcraft III never reads the editor trigger
+// files; World Editor needs them to load a map. Each is replaced with a valid
+// file header followed by a format version no editor release writes, so the
+// editor's loader rejects it. The game behaviour of the map is unchanged; an
+// MPQ editor can still remove the files, so this is a deterrent only.
+export function editorBlockContents(name) {
+    assert(EDITOR_FILES.some(file => canonicalPath(file) === canonicalPath(name)), 'Not an editor trigger file: ' + name);
+    const version = Buffer.alloc(4);
+    version.writeUInt32LE(0xffffffff);
+    return canonicalPath(name) === 'WAR3MAP.WTG' ? Buffer.concat([Buffer.from('WTG!'), version]) : version;
+}
 
 function contractRecord(value, keys, label) {
     assert(value !== null && typeof value === 'object' && !Array.isArray(value), label + ' must be an object');
@@ -137,12 +148,21 @@ export function planCleanup(map, ast, options, context = {}) {
     const keep = new Set(options.keepFiles.map(canonicalPath));
     const names = [...(options.editor ? EDITOR_FILES : []), ...(options.development ? DEVELOPMENT_FILES : []), ...(options.editorData ? EDITOR_DATA_FILES : [])]
         .filter(name => !keep.has(canonicalPath(name)) && map.has(name));
-    if (!names.length) return { names, imports: null };
-    if (reviewed) for (const name of names) assert(reviewed.has(canonicalPath(name)), 'Cleanup contract does not review selected candidate ' + name);
-    validateReferences(ast, names, reviewed !== null);
+    // Blocking rewrites the existing trigger files and never adds files. The
+    // script must not reference either name, as for deletion.
+    if (options.editorBlock) for (const name of EDITOR_FILES) assert(map.has(name), 'Editor blocking requires ' + name + ' in the input map');
+    const blocked = options.editorBlock ? EDITOR_FILES.map(name => [name, editorBlockContents(name)]) : [];
+    const targets = [...names, ...blocked.map(([name]) => name)];
+    if (!targets.length) return { names, imports: null, blocked };
+    if (reviewed) {
+        for (const name of names) assert(reviewed.has(canonicalPath(name)), 'Cleanup contract does not review selected candidate ' + name);
+        for (const [name] of blocked) assert(reviewed.has(canonicalPath(name)), 'Cleanup contract does not review editor-blocked file ' + name);
+    }
+    validateReferences(ast, targets, reviewed !== null);
+    if (!names.length) return { names, imports: null, blocked };
     // A removed manifest needs no row updates.
-    if (names.some(name => canonicalPath(name) === 'WAR3MAP.IMP')) return { names, imports: null };
+    if (names.some(name => canonicalPath(name) === 'WAR3MAP.IMP')) return { names, imports: null, blocked };
     const before = map.read('war3map.imp');
     const after = cleanImports(before, names);
-    return { names, imports: after && !after.equals(before) ? after : null };
+    return { names, imports: after && !after.equals(before) ? after : null, blocked };
 }

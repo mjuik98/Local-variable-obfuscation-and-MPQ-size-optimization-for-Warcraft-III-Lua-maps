@@ -47,7 +47,7 @@ test('each preset applies its intended source preservation, compression and clea
         assert.equal(config.lua.minify, false);
         assert.equal(config.lua.renameLocals, false);
         assert.equal(config.strings.enabled, false);
-        assert.deepEqual(config.cleanup, { editor: false, development: false, editorData: false, listfile: false, keepFiles: [] });
+        assert.deepEqual(config.cleanup, { editor: false, development: false, editorData: false, listfile: false, editorBlock: false, keepFiles: [] });
         assert.equal(config.compression.enabled, true);
     }
     assert.deepEqual(fast.config.compression.levels, [6]);
