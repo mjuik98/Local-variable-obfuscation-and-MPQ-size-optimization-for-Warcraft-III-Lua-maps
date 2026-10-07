@@ -23,14 +23,18 @@ function unsupported(node, name, reason) {
         ((node.loc?.start.column ?? 0) + 1) + ': ' + reason + '; remove this --vm-function selection or use --no-vm.');
 }
 
-// The supported language has no calls, globals, upvalues, closures, varargs or
-// loops. Each source expression produces one value; multiple assignment takes
-// snapshots before any store, and conditional jumps preserve short circuiting.
-function compile(fn) {
-    const name = fn.identifier.name, program = [], parameters = new Map();
+// The supported language has no calls, globals, upvalues, closures or
+// varargs. Each source expression produces one value; multiple assignment
+// takes snapshots before any store, and conditional jumps preserve short
+// circuiting. while/repeat loops and their breaks are jumps. A numeric for
+// body is a separate program run by a real Lua numeric for in the
+// interpreter, so the loop's integer/float, limit and error rules are Lua's.
+// A return inside such a body stores its values and unwinds every body.
+const MAX_RETURNS = 8;
+function compile(fn, programs) {
+    const name = fn.identifier.name, parameters = new Map();
     let nextRegister = 1;
     const allocate = () => nextRegister++;
-    const emit = (...instruction) => { program.push(instruction); return program.length - 1; };
     const lookup = (node, environment) => {
         if (node.name === '_ENV' || !environment.has(node.name)) unsupported(node, name, 'external or environment reference ' + node.name);
         return environment.get(node.name);
@@ -39,92 +43,140 @@ function compile(fn) {
         if (parameter.type !== 'Identifier' || parameter.name === '_ENV') unsupported(parameter, name, 'only fixed identifier parameters are supported');
         parameters.set(parameter.name, allocate());
     });
-    const expression = (node, environment) => {
-        const target = allocate();
-        switch (node.type) {
-        case 'NumericLiteral': case 'BooleanLiteral': case 'NilLiteral':
-            // Keep the spelling: JS numbers must not round Lua integers or
-            // replace float literals with integer literals.
-            emit('constant', target, node.raw); break;
-        case 'Identifier': emit('move', target, lookup(node, environment)); break;
-        case 'UnaryExpression': {
-            if (!unary.has(node.operator)) unsupported(node, name, 'unsupported unary operator ' + node.operator);
-            emit('unary:' + node.operator, target, expression(node.argument, environment)); break;
-        }
-        case 'BinaryExpression': {
-            if (!binary.has(node.operator)) unsupported(node, name, 'unsupported binary operator ' + node.operator);
-            const left = expression(node.left, environment), right = expression(node.right, environment);
-            emit('binary:' + node.operator, target, left, right); break;
-        }
-        case 'LogicalExpression': {
-            assert(['and', 'or'].includes(node.operator), 'Unknown logical operator');
-            const left = expression(node.left, environment);
-            emit('move', target, left);
-            const jump = emit(node.operator === 'and' ? 'unless' : 'when', left, 0);
-            emit('move', target, expression(node.right, environment));
-            program[jump][2] = program.length + 1;
-            break;
-        }
-        default: unsupported(node, name, 'unsupported expression ' + node.type);
-        }
-        return target;
-    };
-    const statements = (body, environment) => {
-        for (const node of body) {
+    // A body program inside a numeric for has depth > 0. Its loop context is
+    // null outside loops, { breaks } for a jump loop, or 'for' for its own body.
+    const build = (body, environment, depth) => {
+        const program = [], id = programs.push(program);
+        const emit = (...instruction) => { program.push(instruction); return program.length - 1; };
+        const expression = (node, environment) => {
+            const target = allocate();
             switch (node.type) {
-            case 'LocalStatement': {
-                const values = node.init.map(value => expression(value, environment));
-                node.variables.forEach((variable, index) => {
-                    if (variable.name === '_ENV') unsupported(variable, name, 'local environment changes are unsupported');
-                    const slot = allocate();
-                    environment.set(variable.name, slot);
-                    if (index < values.length) emit('move', slot, values[index]);
-                    else emit('constant', slot, 'nil');
-                });
+            case 'NumericLiteral': case 'BooleanLiteral': case 'NilLiteral':
+                // Keep the spelling: JS numbers must not round Lua integers or
+                // replace float literals with integer literals.
+                emit('constant', target, node.raw); break;
+            case 'Identifier': emit('move', target, lookup(node, environment)); break;
+            case 'UnaryExpression': {
+                if (!unary.has(node.operator)) unsupported(node, name, 'unsupported unary operator ' + node.operator);
+                emit('unary:' + node.operator, target, expression(node.argument, environment)); break;
+            }
+            case 'BinaryExpression': {
+                if (!binary.has(node.operator)) unsupported(node, name, 'unsupported binary operator ' + node.operator);
+                const left = expression(node.left, environment), right = expression(node.right, environment);
+                emit('binary:' + node.operator, target, left, right); break;
+            }
+            case 'LogicalExpression': {
+                assert(['and', 'or'].includes(node.operator), 'Unknown logical operator');
+                const left = expression(node.left, environment);
+                emit('move', target, left);
+                const jump = emit(node.operator === 'and' ? 'unless' : 'when', left, 0);
+                emit('move', target, expression(node.right, environment));
+                program[jump][2] = program.length + 1;
                 break;
             }
-            case 'AssignmentStatement': {
-                const slots = node.variables.map(variable => {
-                    if (variable.type !== 'Identifier') unsupported(variable, name, 'only assignments to local variables are supported');
-                    return lookup(variable, environment);
-                });
-                if (new Set(slots).size !== slots.length) unsupported(node, name, 'repeated assignment targets have implementation-dependent store order');
-                const values = node.init.map(value => expression(value, environment));
-                slots.forEach((slot, index) => {
-                    if (index < values.length) emit('move', slot, values[index]);
-                    else emit('constant', slot, 'nil');
-                });
-                break;
+            default: unsupported(node, name, 'unsupported expression ' + node.type);
             }
-            case 'ReturnStatement': {
-                if (node.arguments.length > 8) unsupported(node, name, 'at most eight return values are supported');
-                emit('return:' + node.arguments.length, ...node.arguments.map(value => expression(value, environment)));
-                break;
-            }
-            case 'DoStatement': statements(node.body, new Map(environment)); break;
-            case 'IfStatement': {
-                const exits = [];
-                for (const clause of node.clauses) {
-                    const skip = clause.condition ? emit('unless', expression(clause.condition, environment), 0) : null;
-                    statements(clause.body, new Map(environment));
-                    exits.push(emit('jump', 0));
-                    if (skip !== null) program[skip][2] = program.length + 1;
+            return target;
+        };
+        // A jump loop patches its breaks to the first instruction after it.
+        const loop = emitBody => {
+            const context = { breaks: [] };
+            emitBody(context);
+            context.breaks.forEach(index => { program[index][1] = program.length + 1; });
+        };
+        const statements = (body, environment, loopContext) => {
+            for (const node of body) {
+                switch (node.type) {
+                case 'LocalStatement': {
+                    const values = node.init.map(value => expression(value, environment));
+                    node.variables.forEach((variable, index) => {
+                        if (variable.name === '_ENV') unsupported(variable, name, 'local environment changes are unsupported');
+                        const slot = allocate();
+                        environment.set(variable.name, slot);
+                        if (index < values.length) emit('move', slot, values[index]);
+                        else emit('constant', slot, 'nil');
+                    });
+                    break;
                 }
-                exits.forEach(index => { program[index][1] = program.length + 1; });
-                break;
+                case 'AssignmentStatement': {
+                    const slots = node.variables.map(variable => {
+                        if (variable.type !== 'Identifier') unsupported(variable, name, 'only assignments to local variables are supported');
+                        return lookup(variable, environment);
+                    });
+                    if (new Set(slots).size !== slots.length) unsupported(node, name, 'repeated assignment targets have implementation-dependent store order');
+                    const values = node.init.map(value => expression(value, environment));
+                    slots.forEach((slot, index) => {
+                        if (index < values.length) emit('move', slot, values[index]);
+                        else emit('constant', slot, 'nil');
+                    });
+                    break;
+                }
+                case 'ReturnStatement': {
+                    if (node.arguments.length > MAX_RETURNS) unsupported(node, name, 'at most eight return values are supported');
+                    emit((depth ? 'exit:' : 'return:') + node.arguments.length, ...node.arguments.map(value => expression(value, environment)));
+                    break;
+                }
+                case 'BreakStatement':
+                    if (loopContext === null) unsupported(node, name, 'break outside a loop');
+                    if (loopContext === 'for') emit('break');
+                    else loopContext.breaks.push(emit('jump', 0));
+                    break;
+                case 'DoStatement': statements(node.body, new Map(environment), loopContext); break;
+                case 'IfStatement': {
+                    const exits = [];
+                    for (const clause of node.clauses) {
+                        const skip = clause.condition ? emit('unless', expression(clause.condition, environment), 0) : null;
+                        statements(clause.body, new Map(environment), loopContext);
+                        exits.push(emit('jump', 0));
+                        if (skip !== null) program[skip][2] = program.length + 1;
+                    }
+                    exits.forEach(index => { program[index][1] = program.length + 1; });
+                    break;
+                }
+                case 'WhileStatement':
+                    loop(context => {
+                        const start = program.length + 1;
+                        const skip = emit('unless', expression(node.condition, environment), 0);
+                        statements(node.body, new Map(environment), context);
+                        emit('jump', start);
+                        program[skip][2] = program.length + 1;
+                    });
+                    break;
+                case 'RepeatStatement':
+                    loop(context => {
+                        // The condition is inside the body's scope.
+                        const start = program.length + 1, inner = new Map(environment);
+                        statements(node.body, inner, context);
+                        emit('unless', expression(node.condition, inner), start);
+                    });
+                    break;
+                case 'ForNumericStatement': {
+                    const initial = expression(node.start, environment), limit = expression(node.end, environment);
+                    const step = node.step ? expression(node.step, environment) : allocate();
+                    if (!node.step) emit('constant', step, '1');
+                    const variable = allocate(), inner = new Map(environment);
+                    if (node.variable.name === '_ENV') unsupported(node.variable, name, 'local environment changes are unsupported');
+                    inner.set(node.variable.name, variable);
+                    const instruction = emit(depth ? 'for:inner' : 'for:outer', initial, limit, step, variable, 0);
+                    program[instruction][5] = build(node.body, inner, depth + 1);
+                    break;
+                }
+                default: unsupported(node, name, 'unsupported statement ' + node.type);
+                }
             }
-            default: unsupported(node, name, 'unsupported statement ' + node.type);
-            }
+        };
+        statements(body, environment, depth ? 'for' : null);
+        emit(depth ? 'end' : 'return:0');
+        assert(program.length <= 10000, 'VM selection exceeds program limits: ' + name);
+        for (const instruction of program) {
+            const target = instruction[0] === 'jump' ? instruction[1] : ['unless', 'when'].includes(instruction[0]) ? instruction[2] : null;
+            if (target !== null) assert(Number.isInteger(target) && target >= 1 && target <= program.length, 'Invalid VM jump');
         }
+        return id;
     };
-    statements(fn.body, parameters);
-    emit('return:0');
-    assert(program.length <= 10000 && nextRegister <= 4096, 'VM selection exceeds program limits: ' + name);
-    for (const instruction of program) {
-        const target = instruction[0] === 'jump' ? instruction[1] : ['unless', 'when'].includes(instruction[0]) ? instruction[2] : null;
-        if (target !== null) assert(Number.isInteger(target) && target >= 1 && target <= program.length, 'Invalid VM jump');
-    }
-    return program;
+    const id = build(fn.body, parameters, 0);
+    assert(nextRegister <= 4096 && programs.length <= 10000, 'VM selection exceeds program limits: ' + name);
+    return id;
 }
 
 function interpreter(helper, programs, seed) {
@@ -141,6 +193,9 @@ function interpreter(helper, programs, seed) {
         [operations[index], operations[other]] = [operations[other], operations[index]];
     }
     const payloads = programs.map(program => '{' + program.map(row => '{' + [ids.get(row[0]), ...row.slice(1)].join(',') + '}').join(',') + '}').join(',');
+    // Values stored by a return inside a loop body: r[-1] holds the count.
+    const stored = () => Array.from({ length: MAX_RETURNS + 1 }, (_, count) => 'if r[-1]==' + count + ' then return ' +
+        Array.from({ length: count }, (_, item) => 'r[' + (-2 - item) + ']').join(',') + ' end').join(' ');
     const dispatch = operations.map((operation, index) => {
         let statement;
         if (operation === 'constant') statement = 'r[i[2]]=i[3]';
@@ -150,14 +205,26 @@ function interpreter(helper, programs, seed) {
         else if (operation === 'when') statement = 'if r[i[2]] then pc=i[3] end';
         else if (operation.startsWith('unary:')) statement = 'r[i[2]]=' + operation.slice(6) + ' r[i[3]]';
         else if (operation.startsWith('binary:')) statement = 'r[i[2]]=r[i[3]]' + operation.slice(7) + 'r[i[4]]';
-        else {
+        else if (operation === 'end') statement = 'return nil';
+        else if (operation === 'break') statement = 'return false';
+        else if (operation.startsWith('for:')) {
+            // true unwinds a stored return; false ends this loop only.
+            statement = 'for v=r[i[2]],r[i[3]],r[i[4]] do r[i[5]]=v local s=run(i[6],r) if s then ' +
+                (operation === 'for:inner' ? 'return true' : stored()) + ' end if s==false then break end end';
+        } else if (operation.startsWith('exit:')) {
+            const count = Number(operation.slice(5));
+            statement = Array.from({ length: count }, (_, item) => 'r[' + (-2 - item) + ']=r[i[' + (item + 2) + ']] ').join('') + 'r[-1]=' + count + ' return true';
+        } else {
             assert(operation.startsWith('return:'), 'Unknown VM operation');
             const count = Number(operation.slice(7));
             statement = 'return ' + Array.from({ length: count }, (_, item) => 'r[i[' + (item + 2) + ']]').join(',');
         }
         return (index ? 'elseif' : 'if') + ' o==' + ids.get(operation) + ' then ' + statement;
     }).join('\n');
-    return 'local ' + helper + '=(function()\nlocal p={' + payloads + '}\nreturn function(id,r)\nlocal pc=1\nwhile true do\nlocal i=p[id][pc]\nlocal o=i[1]\npc=pc+1\n' + dispatch + '\nend\nend\nend\nend)()\n';
+    const body = 'local pc=1\nwhile true do\nlocal i=p[id][pc]\nlocal o=i[1]\npc=pc+1\n' + dispatch + '\nend\nend\nend\n';
+    // Selections without numeric for keep the original single-level form.
+    if (!operations.some(operation => operation.startsWith('for:'))) return 'local ' + helper + '=(function()\nlocal p={' + payloads + '}\nreturn function(id,r)\n' + body + 'end)()\n';
+    return 'local ' + helper + '=(function()\nlocal p={' + payloads + '}\nlocal function run(id,r)\n' + body + 'return run\nend)()\n';
 }
 
 function sameAst(before, after, selected, wrappers) {
@@ -206,9 +273,9 @@ export function transformVm(code, { functions = [], seed = 'warcraft-lua-protect
         assert(matches.length === 1, 'VM function must identify exactly one declaration: ' + name + '; use --no-vm to disable.');
         const { node } = matches[0];
         if (!node.isLocal || ['main', 'config'].includes(name) || /^(gg_|udg_)/.test(name)) unsupported(node, name, 'only unprotected local functions are supported');
-        programs.push(compile(node)); selected.add(node);
+        const id = compile(node, programs); selected.add(node);
         const parameters = node.parameters.map(parameter => parameter.name);
-        const replacement = 'local function ' + name + '(' + parameters.join(',') + ')\nreturn ' + helper + '(' + programs.length + ',{' + parameters.map((parameter, index) => '[' + (index + 1) + ']=' + parameter).join(',') + '})\nend';
+        const replacement = 'local function ' + name + '(' + parameters.join(',') + ')\nreturn ' + helper + '(' + id + ',{' + parameters.map((parameter, index) => '[' + (index + 1) + ']=' + parameter).join(',') + '})\nend';
         wrappers.set(node, parseLua(replacement).body[0]);
         edits.push({ start: node.range[0], end: node.range[1], replacement });
     }
