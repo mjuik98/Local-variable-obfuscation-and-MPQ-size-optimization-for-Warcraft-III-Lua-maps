@@ -91,6 +91,19 @@ function check(condition, message) {
 }
 const sameBytes = (actual, expected) => Buffer.isBuffer(actual) && actual.equals(expected);
 
+// zlib candidates shared by every encoding entry point.
+function encodingOptions({ levels = [6, 9], strategies = ['default'], zopfli }) {
+    assert(Array.isArray(levels) && levels.length > 0 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'Invalid zlib compression levels');
+    const encoding = { levels: [...new Set(levels)], strategies: normalizeCompressionStrategies(strategies), zopfli: zopfli ?? false };
+    assert.equal(typeof encoding.zopfli, 'boolean', 'zopfli must be boolean');
+    return encoding;
+}
+
+// (attributes) v100 stores CRC32 (4), FILETIME (8) and MD5 (16) arrays with
+// one row per block, in this order, for each flag that is present.
+const ATTRIBUTE_ARRAYS = [[1, 4], [2, 8], [4, 16]];
+const attributeRowSize = flags => ATTRIBUTE_ARRAYS.reduce((size, [flag, stride]) => size + (flags & flag ? stride : 0), 0);
+
 export function crc32(bytes) {
     if (typeof zlib.crc32 === 'function') return zlib.crc32(bytes) >>> 0;
     let crc = 0xffffffff;
@@ -402,7 +415,7 @@ export function openMap(input) {
     // Encode files with one batch of sectors, so large and small files share
     // the compression threads. Encrypted blocks keep a sector table even when
     // no sector compresses, since encrypted raw sector data cannot be read back.
-    function encodeMany(items, levels, strategies, zopfli) {
+    function encodeMany(items, { levels, strategies, zopfli }) {
         const sectors = [];
         const layout = items.map(({ contents, size = sectorSize }) => {
             const first = sectors.length, count = Math.ceil(contents.length / size);
@@ -423,18 +436,12 @@ export function openMap(input) {
             return keepSectors || compressed.length < contents.length ? { data: compressed, flags: 0x80000200 } : { data: contents, flags: 0x80000000 };
         });
     }
-    function encode(contents, levels, strategies, zopfli) {
-        return encodeMany([{ contents }], levels, strategies, zopfli)[0];
-    }
-    function compressionLevels(levels = [6, 9]) {
-        assert(Array.isArray(levels) && levels.length > 0 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'Invalid zlib compression levels');
-        return [...new Set(levels)];
+    function encode(contents, encoding) {
+        return encodeMany([{ contents }], encoding)[0];
     }
     function replace(entries, options = {}) {
         validateArchive();
-        const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
-        const zopfli = options.zopfli ?? false;
-        assert.equal(typeof zopfli, 'boolean', 'zopfli must be boolean');
+        const encoding = encodingOptions(options);
         const encoded = new Map();
         const requested = [...entries];
         assert(requested.every(entry => Array.isArray(entry) && entry.length === 2 && validName(entry[0])), 'Invalid MPQ replacement entries');
@@ -442,28 +449,25 @@ export function openMap(input) {
         const changes = new Map(requested.map(([name, contents]) => [canonicalName(name) === '(LISTFILE)' ? '(listfile)' : name, contents]));
         assert(![...changes.keys()].some(name => canonicalName(name) === '(ATTRIBUTES)'), 'Attributes are updated automatically');
         assert(![...changes.keys()].some(name => canonicalName(name) === '(SIGNATURE)'), 'Signed maps are not supported');
-        const canonical = canonicalName;
-        assert.equal(new Set([...changes.keys()].map(canonical)).size, changes.size, 'Duplicate MPQ paths');
         const same = new Map();
         for (const [name, contents] of changes) {
-            assert(name.length > 0 && !/[\0\r\n]/.test(name), 'Invalid MPQ entry name');
             assert(Buffer.isBuffer(contents), 'Replacement contents must be a Buffer');
             const identical = read(name, true)?.equals(contents);
             if (identical && !options.recompress) changes.delete(name);
             else same.set(name, identical);
         }
-        const candidates = encodeMany([...changes.values()].map(contents => ({ contents })), levels, strategies, zopfli);
+        const candidates = encodeMany([...changes.values()].map(contents => ({ contents })), encoding);
         for (const [position, [name]] of [...changes].entries()) {
             const index = indexOf(name), identical = same.get(name), candidate = candidates[position];
             if (identical && candidate.data.length >= blockTable.readUInt32LE(index * 16 + 4)) { changes.delete(name); continue; }
             if (index >= 0) assert.equal(hashReferences()[index], 1, 'Aliased entries cannot be replaced independently: ' + name);
             encoded.set(name, candidate);
         }
-        return commit(changes, encoded, levels, strategies, zopfli);
+        return commit(changes, encoded, encoding);
     }
     // Write `changes` (name -> contents, with optional pre-encoded payloads) plus
     // the listfile and attributes updates they need, then verify the result.
-    function commit(changes, encoded, levels, strategies, zopfli) {
+    function commit(changes, encoded, encoding) {
         if (!changes.size) return compact();
         const additions = [...changes.keys()].filter(name => indexOf(name) < 0);
         if (additions.length) {
@@ -507,12 +511,11 @@ export function openMap(input) {
             assert.equal(attributes.readUInt32LE(0), 100, 'Unsupported attributes version');
             const flags = attributes.readUInt32LE(4);
             assert.equal(flags & ~7, 0, 'Unsupported attribute flags');
-            const expected = 8 + blockCount * ((flags & 1 ? 4 : 0) + (flags & 2 ? 8 : 0) + (flags & 4 ? 16 : 0));
-            assert.equal(attributes.length, expected, 'Unexpected attributes size');
-            const updated = Buffer.alloc(8 + nextBlock * ((flags & 1 ? 4 : 0) + (flags & 2 ? 8 : 0) + (flags & 4 ? 16 : 0)));
+            assert.equal(attributes.length, 8 + blockCount * attributeRowSize(flags), 'Unexpected attributes size');
+            const updated = Buffer.alloc(8 + nextBlock * attributeRowSize(flags));
             attributes.copy(updated, 0, 0, 8);
             let oldStart = 8, newStart = 8;
-            for (const [flag, stride] of [[1, 4], [2, 8], [4, 16]]) {
+            for (const [flag, stride] of ATTRIBUTE_ARRAYS) {
                 if (!(flags & flag)) continue;
                 attributes.copy(updated, newStart, oldStart, oldStart + blockCount * stride);
                 oldStart += blockCount * stride;
@@ -543,7 +546,7 @@ export function openMap(input) {
         let cursor = bytes.length;
         for (const [name, contents] of changes) {
             // Warcraft requires sector tables; single-unit compressed entries are never emitted.
-            const { data, flags } = encoded.get(name) ?? encode(contents, levels, strategies, zopfli);
+            const { data, flags } = encoded.get(name) ?? encode(contents, encoding);
             const index = indices.get(name), p = index * 16;
             blocks.writeUInt32LE(cursor - offset, p);
             blocks.writeUInt32LE(data.length, p + 4);
@@ -623,9 +626,7 @@ export function openMap(input) {
     }
     function optimize(options = {}) {
         validateArchive();
-        const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
-        const zopfli = options.zopfli ?? false;
-        assert.equal(typeof zopfli, 'boolean', 'zopfli must be boolean');
+        const encoding = encodingOptions(options);
         const candidates = new Map();
         const names = options.names ?? listNames();
         assert(Array.isArray(names) && names.every(name => typeof name === 'string'), 'Invalid MPQ optimization names');
@@ -644,14 +645,14 @@ export function openMap(input) {
         }
         // Each candidate is decoded once and encoded in one batch; only entries
         // whose payload shrinks are written, as replace() with recompress does.
-        const encodings = encodeMany([...candidates.values()].map(({ contents }) => ({ contents })), levels, strategies, zopfli);
+        const encodings = encodeMany([...candidates.values()].map(({ contents }) => ({ contents })), encoding);
         const changes = new Map(), encoded = new Map();
         [...candidates].forEach(([name, { contents, packedSize }], position) => {
             if (encodings[position].data.length >= packedSize) return;
             changes.set(name, contents);
             encoded.set(name, encodings[position]);
         });
-        const candidate = commit(changes, encoded, levels, strategies, zopfli);
+        const candidate = commit(changes, encoded, encoding);
         const output = candidate.length < bytes.length ? candidate : compact();
         verifyPreserved(output, { changedNames: [...changes.keys()] });
         return output;
@@ -665,9 +666,7 @@ export function openMap(input) {
         const live = validateArchive();
         const shift = options.shift;
         assert(SUPPORTED_OUTPUT_SECTOR_SHIFTS.includes(shift), 'MPQ sector size shift must be one of ' + SUPPORTED_OUTPUT_SECTOR_SHIFTS.join(', '));
-        const levels = compressionLevels(options.levels), strategies = normalizeCompressionStrategies(options.strategies === undefined ? ['default'] : options.strategies);
-        const zopfli = options.zopfli ?? false;
-        assert.equal(typeof zopfli, 'boolean', 'zopfli must be boolean');
+        const encoding = encodingOptions(options);
         const size = 512 * 2 ** shift, names = new Map();
         for (const name of [...listNames(), '(listfile)', '(attributes)']) {
             for (const p of matchingSlots(name)) {
@@ -681,7 +680,7 @@ export function openMap(input) {
             if (flags & 0x10000) assert(name !== null && hashReferences()[index] === 1, 'An encrypted MPQ block needs exactly one known name for a sector size change: ' + label);
             return { index, name, flags, contents: readBlock(index, name) };
         });
-        const encodings = encodeMany(entries.map(entry => ({ contents: entry.contents, size, keepSectors: Boolean(entry.flags & 0x10000) })), levels, strategies, zopfli);
+        const encodings = encodeMany(entries.map(entry => ({ contents: entry.contents, size, keepSectors: Boolean(entry.flags & 0x10000) })), encoding);
         entries.forEach((entry, position) => {
             entry.data = encodings[position].data;
             entry.flags = ((entry.flags & ~0x200) | (encodings[position].flags & 0x200)) >>> 0;
@@ -787,7 +786,7 @@ export function openMap(input) {
             assert.equal(flags & ~7, 0, 'Unsupported attribute flags');
             check(sameBytes(after.subarray(0, 8), before.subarray(0, 8)), 'MPQ attributes header changed');
             let oldStart = 8, newStart = 8;
-            for (const [flag, stride] of [[1, 4], [2, 8], [4, 16]]) {
+            for (const [flag, stride] of ATTRIBUTE_ARRAYS) {
                 if (!(flags & flag)) continue;
                 for (let index = 0; index < blockCount; index++) {
                     // Timestamps and deleted slots retain their values; checksum updates

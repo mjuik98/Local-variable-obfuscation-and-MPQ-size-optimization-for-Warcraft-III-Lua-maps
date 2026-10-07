@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { canonicalPath } from './config.mjs';
+import { resolveLuaBindings } from './lua.mjs';
 import { ignoredKeys, literalString as constantString } from './lua-syntax.mjs';
 
 const EDITOR_FILES = ['war3map.wtg', 'war3map.wct'];
@@ -94,15 +95,15 @@ function walk(node, visit, parent = null) {
 function validateReferences(ast, names, reviewed = false) {
     const paths = names.map(canonicalPath);
     const forbiddenApi = name => FILE_APIS.has(name) && !(reviewed && name === 'Preloader');
-    for (const global of ast.globals ?? []) {
-        const detail = 'File cleanup cannot prove runtime file references for ' + global.name + '; use --no-cleanup or preserve the candidates';
-        const message = global.name === 'Preloader' ?
+    for (const name of resolveLuaBindings(ast).globalNames) {
+        const detail = 'File cleanup cannot prove runtime file references for ' + name + '; use --no-cleanup or preserve the candidates';
+        const message = name === 'Preloader' ?
             '파일 정리를 중단했습니다. Preloader가 있어 정리 대상의 실행 중 사용 여부를 확인할 수 없습니다.\n' +
             '정리 대상: ' + names.join(', ') + '\n' +
             '정리하려면 메인 작업 화면의 검토 계약 → 찾아보기에서 현재 입력 맵을 검토한 JSON을 선택하세요.\n' +
             '계약이 없으면 고급 설정의 에디터 파일 정리·개발 파일 정리를 모두 해제하고 다시 검사하세요. Lua 보호·재압축은 계속 사용할 수 있습니다.\n' +
             'CLI: --cleanup-contract <검토계약.json> 또는 --no-cleanup\n' + detail : detail;
-        assert(!forbiddenApi(global.name), message);
+        assert(!forbiddenApi(name), message);
     }
     walk(ast, (node, parent) => {
         const text = constantString(node);

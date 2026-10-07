@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { assertLuaResourceLimits, assertRuntimeRewriteSafe, getPreparedLuaAst, isLuaKeyword, parseLua, prepareLua, shortLuaName } from './lua.mjs';
 import { ignoredKeys as ignored } from './lua-syntax.mjs';
-import { createSeededRandom, validateSeed } from './seed.mjs';
+import { createSeededRandom, seededShuffle, validateSeed } from './seed.mjs';
 
 const binary = new Set(['+', '-', '*', '/', '//', '%', '^', '&', '|', '~', '<<', '>>', '==', '~=', '<', '<=', '>', '>=']);
 const unary = new Set(['-', '~', 'not']);
@@ -180,18 +180,15 @@ function compile(fn, programs) {
 }
 
 function interpreter(helper, programs, seed) {
-    const random = createSeededRandom(seed), operations = [...new Set(programs.flatMap(program => program.map(row => row[0])))].sort();
+    const random = createSeededRandom(seed), sorted = [...new Set(programs.flatMap(program => program.map(row => row[0])))].sort();
     const ids = new Map(), used = new Set();
-    for (const operation of operations) {
+    for (const operation of sorted) {
         let id;
         do { id = 1 + random() % 0x3fffffff; } while (used.has(id));
         used.add(id); ids.set(operation, id);
     }
     // Vary dispatch order as well as opcode numbers, without runtime randomness.
-    for (let index = operations.length - 1; index > 0; index--) {
-        const other = random() % (index + 1);
-        [operations[index], operations[other]] = [operations[other], operations[index]];
-    }
+    const operations = seededShuffle(sorted, random);
     const payloads = programs.map(program => '{' + program.map(row => '{' + [ids.get(row[0]), ...row.slice(1)].join(',') + '}').join(',') + '}').join(',');
     // Values stored by a return inside a loop body: r[-1] holds the count.
     const stored = () => Array.from({ length: MAX_RETURNS + 1 }, (_, count) => 'if r[-1]==' + count + ' then return ' +

@@ -25,3 +25,15 @@ export function createSeededRandom(seed) {
         return result;
     };
 }
+
+// Fisher-Yates over a copy, one generator value per position. The modulo
+// choice is part of the established output; changing it would change names
+// and helper shapes produced for existing seeds.
+export function seededShuffle(values, random) {
+    const result = [...values];
+    for (let index = result.length - 1; index > 0; index--) {
+        const other = random() % (index + 1);
+        [result[index], result[other]] = [result[other], result[index]];
+    }
+    return result;
+}

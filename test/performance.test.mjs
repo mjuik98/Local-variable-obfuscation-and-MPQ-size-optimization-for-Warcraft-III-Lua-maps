@@ -24,6 +24,17 @@ test('reflection analysis of deeply nested calls stays linear', () => {
     `);
 });
 
+test('parsing scripts with many distinct globals stays linear', () => {
+    // The parser's own scope tracking scanned every known global per reference
+    // (about 25 s for 40,000 globals, quadratic beyond); this takes about 1 s.
+    runBounded(`
+        import { transformLua } from ${moduleUrl('../src/lua.mjs')};
+        const parts = ['function config() end', 'function main() end'];
+        for (let index = 0; index < 60000; index++) parts.push('function G' + index + '() return G' + Math.floor(index / 2) + ' end');
+        transformLua(parts.join('\\n'));
+    `);
+});
+
 test('archive updates with many entries avoid repeated hash-table scans', () => {
     // Replacement verification previously compared every block with every change
     // (about 70 s for this archive); it is now linear (about 2 s).

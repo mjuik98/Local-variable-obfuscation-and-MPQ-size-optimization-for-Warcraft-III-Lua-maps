@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fengari from 'fengari';
 import { transformVm } from '../src/vm.mjs';
-import { parseLua, prepareLua, transformLua } from '../src/lua.mjs';
+import { parseLua, prepareLua, resolveLuaBindings, transformLua } from '../src/lua.mjs';
 
 function execute(code) {
     const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
@@ -47,7 +47,7 @@ test('selected local arithmetic and conditional functions execute through determ
     assert(first.code.includes('local function Unselected(value) return value + 2 end'));
     assert(!first.code.includes('value * scale'));
     const ast = parseLua(first.code);
-    const globals = ast.globals.map(node => node.name);
+    const globals = [...resolveLuaBindings(ast).globalNames];
     assert.deepEqual(globals, [], 'VM has no standard library, load, native or RNG dependencies');
 });
 
@@ -264,5 +264,5 @@ test('VM programs without numeric for keep the single-level interpreter', () => 
     assert(!plain.code.includes('local function run'));
     const looped = transformVm('local function T(a) for i = 1, a do a = a - 1 end return a end return T(3)', { functions: ['T'], seed: 'flat' });
     assert(looped.code.includes('local function run'));
-    assert.deepEqual(parseLua(looped.code).globals.map(node => node.name), [], 'The loop interpreter has no global dependencies');
+    assert.deepEqual([...resolveLuaBindings(parseLua(looped.code)).globalNames], [], 'The loop interpreter has no global dependencies');
 });

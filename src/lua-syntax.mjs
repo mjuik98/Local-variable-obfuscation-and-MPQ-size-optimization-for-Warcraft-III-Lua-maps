@@ -11,6 +11,15 @@ export function riskCause(node, reason) {
 
 export function firstCause(before, after) { return !before || after.offset < before.offset ? after : before; }
 
+// Offset where a generated chunk prelude starts: after a leading shebang line
+// and its line break, which must stay the first line, or 0.
+export function chunkInsertionOffset(code, label) {
+    if (!code.startsWith('#!')) return 0;
+    const end = code.search(/[\r\n]/);
+    if (end < 0) throw new Error(label + ' cannot follow an unterminated shebang');
+    return end + (code[end] === '\r' && code[end + 1] === '\n' ? 2 : 1);
+}
+
 // The Lua bytes of a parsed string literal's raw text, one character per byte.
 // Decode a copy for analysis only. Source literals are emitted with their
 // original raw text, including UTF-8 and escaped byte values. Escape-free

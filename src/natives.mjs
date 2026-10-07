@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { analyzeGlobalNames, assertLuaResourceLimits, assertRuntimeRewriteSafe, getPreparedLuaAnalysis, isLuaKeyword, parseLua, prepareLua,
-    resolveLuaBindings, shortLuaName } from './lua.mjs';
+import { analyzeGlobalNames, assertLuaResourceLimits, assertRuntimeRewriteSafe, getPreparedLuaAnalysis, getPreparedLuaBindings, isLuaKeyword, parseLua,
+    prepareLua, resolveLuaBindings, shortLuaName } from './lua.mjs';
 import { ENGINE_FUNCTIONS } from './engine-names.mjs';
-import { ignoredKeys as ignored, literalString } from './lua-syntax.mjs';
-import { createSeededRandom, validateSeed } from './seed.mjs';
+import { chunkInsertionOffset, ignoredKeys as ignored, literalString } from './lua-syntax.mjs';
+import { createSeededRandom, seededShuffle, validateSeed } from './seed.mjs';
 
 // Lua base functions with fixed behavior. Loaders and memory control stay
 // direct; analysis already refuses loaders.
@@ -146,12 +146,7 @@ export function transformNatives(code, { enabled = false, encryptNames = false, 
         });
         const withFields = entries.some(entry => entry.field !== null);
         // The table's inner names follow the seed, leaving no fixed signature.
-        const random = createSeededRandom(seed), letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-        for (let index = letters.length - 1; index > 0; index--) {
-            const other = random() % (index + 1);
-            [letters[index], letters[other]] = [letters[other], letters[index]];
-        }
-        const [s, f, t, i, v] = letters;
+        const [s, f, t, i, v] = seededShuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', createSeededRandom(seed));
         const head = 'local ' + table + '=(function(' + s + (withFields ? ',' + f : '') + ')return setmetatable({},{__index=function(' + t + ',' + i + ')local ' + v + '=_ENV[' + s + '[' + i + ']];' +
             (withFields ? 'if ' + f + '[' + i + '] then ' + v + '=' + v + '[' + f + '[' + i + ']] end;' : '') + t + '[' + i + ']=' + v + ';return ' + v + ' end})end)(';
         let text = head;
@@ -169,9 +164,7 @@ export function transformNatives(code, { enabled = false, encryptNames = false, 
         if (withFields) { text += ','; list(entries.map(entry => entry.field)); }
         prelude = text + ');\n';
     }
-    const shebang = code.startsWith('#!') ? code.search(/[\r\n]/) : 0;
-    assert(shebang >= 0, 'Native table cannot follow an unterminated shebang');
-    const insertion = shebang > 0 ? shebang + (code[shebang] === '\r' && code[shebang + 1] === '\n' ? 2 : 1) : 0;
+    const insertion = chunkInsertionOffset(code, 'Native table');
     const pieces = [code.slice(0, insertion), prelude];
     let cursor = insertion;
     for (const edit of edits.sort((a, b) => a.start - b.start)) {
@@ -190,7 +183,8 @@ export function transformNatives(code, { enabled = false, encryptNames = false, 
     assert.equal(sites.bases.length + sites.folded, replaced.size, 'Native reference count changed');
     if (sites.bases.length) {
         // Every replacement must read the table local, never a shadowing name.
-        const outputBindings = resolveLuaBindings(result), binding = outputBindings.references.get(sites.bases[0]);
+        // A prepared output keeps this resolution for the next stage's guards.
+        const outputBindings = outputStage ? getPreparedLuaBindings(outputStage, output) : resolveLuaBindings(result), binding = outputBindings.references.get(sites.bases[0]);
         assert(binding && binding.nodes[0] === result.body[0].variables[0] && sites.bases.every(site => outputBindings.references.get(site) === binding),
             'Native table reference is shadowed');
     }
