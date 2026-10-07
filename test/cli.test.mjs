@@ -382,7 +382,7 @@ test('CLI toggles FourCC folding, editor data cleanup and listfile removal', () 
     assert.deepEqual(parsed.overrides.cleanup, { editorData: true, listfile: true });
     const kept = parseArguments(['--show-settings', '--preset', 'maximum', '--no-fold-fourcc', '--keep-listfile', '--no-cleanup']);
     assert.equal(kept.overrides.lua.foldFourCC, false);
-    assert.deepEqual(kept.overrides.cleanup, { listfile: false, editor: false, development: false, editorData: false });
+    assert.deepEqual(kept.overrides.cleanup, { listfile: false, editor: false, development: false, editorData: false, editorBlock: false });
     for (const options of [['--fold-fourcc', '--no-fold-fourcc'], ['--remove-listfile', '--keep-listfile'], ['--clean-editor-data', '--no-cleanup'], ['--clean-editor-data', '--clean-editor-data']]) {
         assert.throws(() => parseArguments(['--show-settings', ...options]), options.join(' '));
     }
@@ -412,4 +412,39 @@ test('unreadable configuration and contract files are named in the error', t => 
         assert(err.includes(prefix), err);
         assert.match(err, detail);
     }
+});
+
+test('CLI toggles experimental editor blocking and clears it with --no-cleanup', () => {
+    assert.equal(parseArguments(['--show-settings', '--block-editor']).overrides.cleanup.editorBlock, true);
+    assert.equal(parseArguments(['--show-settings', '--no-block-editor']).overrides.cleanup.editorBlock, false);
+    assert.equal(parseArguments(['--show-settings', '--no-cleanup']).overrides.cleanup.editorBlock, false);
+    for (const options of [['--block-editor', '--no-block-editor'], ['--block-editor', '--no-cleanup'], ['--block-editor', '--block-editor']]) {
+        assert.throws(() => parseArguments(['--show-settings', ...options]));
+    }
+});
+
+test('CLI toggles the experimental all-literal string scope', () => {
+    assert.equal(parseArguments(['--show-settings', '--hide-all-strings']).overrides.strings.allLiterals, true);
+    assert.equal(parseArguments(['--show-settings', '--no-hide-all-strings']).overrides.strings.allLiterals, false);
+    for (const options of [['--hide-all-strings', '--no-hide-all-strings'], ['--hide-all-strings', '--hide-all-strings']]) assert.throws(() => parseArguments(['--show-settings', ...options]));
+    const result = run(['--show-settings', '--preset', 'hardened', '--hide-all-strings'], { stdout: { write() {} }, stderr: { write(text) { throw new Error(text); } } });
+    assert.equal(result, 0);
+});
+
+test('CLI selects the editor block format and target files', () => {
+    const parsed = parseArguments(['--show-settings', '--block-editor', '--editor-block-format', 'truncated', '--editor-block-files', 'wct']);
+    assert.deepEqual(parsed.overrides.cleanup, { editorBlock: true, editorBlockFormat: 'truncated', editorBlockFiles: 'wct' });
+    assert.throws(() => parseArguments(['--show-settings', '--editor-block-format', 'empty', '--editor-block-format', 'version']), /Repeated option/);
+    assert.throws(() => parseArguments(['--show-settings', '--editor-block-files']), /Missing value/);
+});
+
+test('CLI accepts dynamic access for editor blocking only when stated explicitly', () => {
+    assert.equal(parseArguments(['--show-settings', '--block-editor', '--block-editor-accept-dynamic']).overrides.cleanup.editorBlockAcceptDynamic, true);
+    assert.throws(() => parseArguments(['--show-settings', '--block-editor-accept-dynamic', '--no-cleanup']), /conflicts/);
+});
+
+test('CLI toggles experimental audio metadata stripping', () => {
+    assert.equal(parseArguments(['--show-settings', '--strip-media-metadata']).overrides.compression.stripMediaMetadata, true);
+    assert.equal(parseArguments(['--show-settings', '--no-strip-media-metadata']).overrides.compression.stripMediaMetadata, false);
+    assert.throws(() => parseArguments(['--show-settings', '--strip-media-metadata', '--no-strip-media-metadata']), /conflicts/);
 });

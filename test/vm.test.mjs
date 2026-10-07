@@ -122,7 +122,8 @@ test('unsupported selections explicitly refuse instead of silently protecting di
         ['local function Target(...) return ... end', /fixed identifier/],
         ['local function Target(a) return Native(a) end', /CallExpression/],
         ['local outer=2; local function Target(a) return a+outer end', /external/],
-        ['local function Target(a) while a do a=a-1 end end', /WhileStatement/],
+        ['local function Target(a) for k in a do end end', /ForGenericStatement/],
+        ['local function Target(a) ::top:: a=a-1 if a>0 then goto top end end', /LabelStatement/],
         ['local function Target(a) return a.field end', /MemberExpression/],
         ['local function Target(a) return "critical value" end', /StringLiteral/],
         ['local function Target(a) return a..2 end', /binary operator/],
@@ -195,4 +196,73 @@ test('adding a VM helper respects Lua active-local limits', () => {
     assert.throws(() => transformVm(source, { functions: ['Target'] }), /local.*200|200.*local/i);
     const separate=Array.from({length:250},()=> 'do local a=1 end').join('\n')+'\nlocal function Target(a) return a end; return Target(7)';
     equivalent(separate, ['Target'], 'limits');
+});
+
+test('while and repeat loops with breaks run as jumps and keep scoping', () => {
+    const result = equivalent(`local function Loops(n)
+        local total, count = 0, 0
+        while count < n do
+            count = count + 1
+            local step = count * 2
+            if step > 9 then break end
+            total = total + step
+        end
+        local guard = 0
+        repeat
+            local next = guard + 3
+            guard = next
+            if guard == 6 then break end
+        until next >= 12
+        while true do
+            do total = total - 1 break end
+        end
+        return total, count, guard
+    end
+    return Loops(10), Loops(0), Loops(2)`, ['Loops'], 'loops');
+    assert(!result.code.includes('count < n'));
+    assert.throws(() => transformVm('local function Target(a) do break end end', { functions: ['Target'] }), /break|outside/);
+});
+
+test('numeric for loops keep Lua integer, float, limit, step and loop-variable rules', () => {
+    equivalent(`local function Sum(a, b, c)
+        local total = 0
+        for i = a, b, c do total = total + i end
+        local plain = 0
+        for i = a, b do plain = plain + i; i = i * 100; plain = plain + i end
+        local empty = 0
+        for i = b, a do empty = empty + 1 end
+        return total, plain, empty
+    end
+    return Sum(1, 10, 3), Sum(10, 1, -2), Sum(1, 3.5, 1), Sum(0.5, 2, 0.5), Sum(1, '3', 1), Sum(1, 0/0, 1)`, ['Sum'], 'numeric');
+    equivalent(`local function Nested(n)
+        local hits = 0
+        for i = 1, n do
+            for j = i, n do
+                if j - i == 2 then break end
+                hits = hits + j
+            end
+            while hits > 40 do
+                for k = 1, 3 do
+                    if k == 2 then return hits, i, k, nil end
+                end
+            end
+            if i == 4 then return hits, i end
+        end
+        return hits
+    end
+    local a, b, c, d = Nested(3)
+    local e, f, g, h = Nested(6)
+    return select('#', Nested(3)), a, b, c, d, e, f, g, h, select('#', Nested(6))`, ['Nested'], 'nested-for');
+    equivalent(`local function Bad(limit) local total = 0 for i = 1, limit do total = total + i end return total end
+    local ok, message = pcall(Bad, nil)
+    local okStep = pcall(function() local function Step(s) for i = 1, 2, s do end end return Step({}) end)
+    return ok, message:match("'for' .*"), okStep`, ['Bad'], 'for-errors');
+});
+
+test('VM programs without numeric for keep the single-level interpreter', () => {
+    const plain = transformVm('local function T(a) while a > 0 do a = a - 1 end return a end return T(3)', { functions: ['T'], seed: 'flat' });
+    assert(!plain.code.includes('local function run'));
+    const looped = transformVm('local function T(a) for i = 1, a do a = a - 1 end return a end return T(3)', { functions: ['T'], seed: 'flat' });
+    assert(looped.code.includes('local function run'));
+    assert.deepEqual(parseLua(looped.code).globals.map(node => node.name), [], 'The loop interpreter has no global dependencies');
 });

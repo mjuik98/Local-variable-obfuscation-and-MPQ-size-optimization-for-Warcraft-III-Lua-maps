@@ -224,3 +224,21 @@ test('runtime strings use the shortest unused helper name and separate keyword-a
     assert(/return e\(\d+\)/.test(result.code) && /c\(e\(\d+\)\)/.test(result.code));
     assert.deepEqual(returnedBytes(result.code), returnedBytes(source));
 });
+
+test('experimental all-literal scope hides rawcodes, orders, callbacks, paths and formats at runtime', () => {
+    const source = String.raw`local calls = {}
+local function call(name) calls[#calls + 1] = name; return name end
+return "A0EG", "attack", call "PublicCallback", "TRIGSTR_123", "Models\\Effect.mdx", "File.txt", "|cffff0000level %d|r", "line\nsecond", "\000\255\x41", "", [==[first
+second]==], "kept value", calls[1], ("%d|r"):format(3), ({["key"] = "value"}).key`;
+    const result = transformStrings(source, { enabled: true, mode: 'runtime', allLiterals: true, keep: ['kept value'] });
+    assert.deepEqual(returnedBytes(result.code), returnedBytes(source));
+    for (const hidden of ['A0EG', 'attack', 'PublicCallback', 'Effect.mdx', 'File.txt', 'cffff0000', 'line\\nsecond', String.raw`"\000\255\x41"`, '%d|r', '"key"', '"value"']) {
+        assert(!result.code.includes(hidden), hidden + ' is hidden');
+    }
+    for (const kept of ['"TRIGSTR_123"', '""', '[==[first\nsecond]==]', '"kept value"']) assert(result.code.includes(kept), kept + ' keeps its source');
+    assert.equal(result.stats.encodedLiterals, 11);
+    const standard = transformStrings(source, { enabled: true, mode: 'runtime' });
+    assert(standard.stats.encodedLiterals < result.stats.encodedLiterals, 'The default scope is unchanged');
+    assert.deepEqual(transformStrings(source, { enabled: true, mode: 'runtime', allLiterals: false }), standard);
+    assert.throws(() => transformStrings(source, { enabled: true, mode: 'escape', allLiterals: true }), /requires runtime mode/);
+});

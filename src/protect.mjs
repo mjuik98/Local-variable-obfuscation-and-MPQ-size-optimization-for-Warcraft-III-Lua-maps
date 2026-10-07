@@ -10,6 +10,7 @@ import { resolveConfig, canonicalPath } from './config.mjs';
 import { readScriptLanguage } from './map-info.mjs';
 import { planCleanup } from './cleanup.mjs';
 import { createSavingsTracker } from './savings.mjs';
+import { stripMediaMetadata } from './media.mjs';
 
 function assertCompilableLua(bytes) {
     const { lua, lauxlib, to_luastring, to_jsstring } = fengari, state = lauxlib.luaL_newstate();
@@ -59,14 +60,35 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
     onProgress('archive');
     const replacements = [['war3map.lua', finalScript]];
     if (cleanup.imports) replacements.push(['war3map.imp', cleanup.imports]);
+    replacements.push(...cleanup.blocked);
     const rewriteOptions = { levels: config.compression.enabled ? config.compression.levels : [0], strategies: config.compression.strategies,
         zopfli: config.compression.enabled && config.compression.zopfli };
-    let result = original.replace(replacements, rewriteOptions);
-    savings.record('lua', 'Lua·import 기록 및 MPQ 공간 회수', result, { rewrite: true });
-    if (cleanup.names.length) result = openMap(result).remove(cleanup.names);
-    savings.record('cleanup', '파일 정리·목록 갱신 및 공간 회수', result, { rewrite: true });
+    // Each stage reopens its result once; the reader is reused by the savings
+    // snapshot and the next stage.
+    let result = original.replace(replacements, rewriteOptions), archive = openMap(result);
+    const stage = (id, label, bytes, options = {}) => {
+        if (bytes !== result) { result = bytes; archive = openMap(result); }
+        savings.record(id, label, result, { ...options, map: archive });
+    };
+    stage('lua', cleanup.blocked.length ? 'Lua·import·에디터 차단 기록 및 MPQ 공간 회수' : 'Lua·import 기록 및 MPQ 공간 회수', result, { rewrite: true });
+    stage('cleanup', '파일 정리·목록 갱신 및 공간 회수', cleanup.names.length ? archive.remove(cleanup.names) : result, { rewrite: true });
+    // Experimental: listed WAV/MP3 files lose metadata that carries no audio.
+    // Aliased, localized, encrypted or excluded files keep their bytes.
+    const media = [];
+    if (config.compression.stripMediaMetadata) {
+        const kept = new Set(config.compression.excludeFiles.map(canonicalPath)), metadata = archive.inspect({ includeHashes: true });
+        for (const { name, slots } of metadata.namedEntries) {
+            if (!/\.(wav|mp3)$/i.test(name) || slots.length !== 1 || kept.has(canonicalPath(name))) continue;
+            const block = metadata.blocks[metadata.hashes[slots[0]].blockIndex];
+            if (block.hashReferences !== 1 || (block.flags !== 0x80000000 && block.flags !== 0x80000200)) continue;
+            const contents = archive.read(name, true), stripped = contents && stripMediaMetadata(name, contents);
+            if (stripped) media.push({ name, stripped, savedBytes: contents.length - stripped.length });
+        }
+        stage('media', '오디오 메타데이터 제거', media.length ? archive.replace(media.map(({ name, stripped }) => [name, stripped]), rewriteOptions) : result, { rewrite: true });
+    }
     if (config.compression.enabled) {
-        const current = openMap(result), excluded = new Set(config.compression.excludeFiles.map(canonicalPath));
+        const excluded = new Set(config.compression.excludeFiles.map(canonicalPath));
+        for (const { name } of media) excluded.add(canonicalPath(name));
         // Changed payloads were just encoded with these exact candidates.
         // Identical replacements may have retained the original stream, so
         // they must still take part in the optional optimization below.
@@ -74,34 +96,38 @@ export function protectMap(input, configuration = {}, { cleanupContract, onProgr
             const previous = name === 'war3map.lua' ? scriptBytes : original.read(name);
             if (!previous?.equals(contents)) excluded.add(canonicalPath(name));
         }
-        result = current.optimize({ names: current.listNames().filter(name => !excluded.has(canonicalPath(name))),
+        result = archive.optimize({ names: archive.listNames().filter(name => !excluded.has(canonicalPath(name))),
             levels: config.compression.levels, strategies: config.compression.strategies, zopfli: config.compression.zopfli });
+        archive = openMap(result);
     }
-    savings.record('recompression', '재압축·MPQ 공간 회수', result);
+    stage('recompression', '재압축·MPQ 공간 회수', result);
     const sectorSizeShift = config.compression.sectorSizeShift;
-    if (sectorSizeShift !== null && openMap(result).inspect().sectorSize !== 512 * 2 ** sectorSizeShift) {
+    if (sectorSizeShift !== null && archive.inspect().sectorSize !== 512 * 2 ** sectorSizeShift) {
         onProgress('sectors');
-        result = openMap(result).resector({ shift: sectorSizeShift, levels: config.compression.levels, strategies: config.compression.strategies, zopfli: config.compression.zopfli });
-        savings.record('sectors', '섹터 크기 변경·전체 재압축', result);
+        stage('sectors', '섹터 크기 변경·전체 재압축', archive.resector({ shift: sectorSizeShift, levels: config.compression.levels,
+            strategies: config.compression.strategies, zopfli: config.compression.zopfli }));
     }
     // The listfile names entries for every earlier stage, so it goes last.
-    if (config.cleanup.listfile && openMap(result).has('(listfile)')) {
-        result = openMap(result).remove(['(listfile)']);
-        savings.record('listfile', '(listfile) 삭제', result, { rewrite: true });
+    if (config.cleanup.listfile && archive.has('(listfile)')) {
+        stage('listfile', '(listfile) 삭제', archive.remove(['(listfile)']), { rewrite: true });
     }
     onProgress('verify');
-    const verified = openMap(result);
+    const verified = archive;
     // Each transform reparses and verifies its emitted code. The final readback
     // is byte-identical to that verified script, so no additional parse is needed.
     assert(verified.read('war3map.lua').equals(finalScript), 'Final script readback mismatch');
     for (const name of ['war3map.w3i', 'war3map.w3e']) assert(verified.read(name).equals(original.read(name)), 'Required map entry changed: ' + name);
     for (const name of cleanup.names) assert(!verified.has(name), 'Cleanup candidate is still present: ' + name);
     if (config.cleanup.listfile) assert(!verified.has('(listfile)'), 'The MPQ listfile is still present');
+    for (const [name, contents] of cleanup.blocked) assert(verified.read(name).equals(contents), 'Editor block readback mismatch: ' + name);
+    for (const { name, stripped } of media) assert(verified.read(name).equals(stripped), 'Media readback mismatch: ' + name);
     return {
         bytes: result,
-        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], mapInfoVersion: info.version,
+        summary: { inputBytes: input.length, outputBytes: result.length, removedFiles: [...cleanup.names, ...(config.cleanup.listfile && original.has('(listfile)') ? ['(listfile)'] : [])], editorBlockedFiles: cleanup.blocked.map(([name]) => name),
+            ...(cleanup.blocked.length ? { editorBlockFormat: config.cleanup.editorBlockFormat } : {}), mapInfoVersion: info.version,
             lua: { ...transformed.stats, inputBytes: scriptBytes.length, outputBytes: finalScript.length }, natives: natives.stats, strings: strings.stats, vm: vm.stats,
-            sectorSize: openMap(result).inspect().sectorSize, savings: savings.summary(),
+            ...(config.compression.stripMediaMetadata ? { media: { strippedFiles: media.map(({ name }) => name), savedBytes: media.reduce((total, item) => total + item.savedBytes, 0) } } : {}),
+            sectorSize: verified.inspect().sectorSize, savings: savings.summary(),
             // Compressed bytes depend on the zlib build; record it with the result.
             environment: { node: process.version, zlib: process.versions.zlib } },
     };

@@ -16,9 +16,9 @@ export function normalizeCompressionStrategies(strategies) {
 export const DEFAULT_CONFIG = Object.freeze({
     lua: Object.freeze({ minify: true, renameLocals: true, keepLocals: Object.freeze([]), nameMode: 'compact', seed: 'warcraft-lua-protector', vmFunctions: Object.freeze([]),
         renameGlobals: false, renameFields: false, keepGlobals: Object.freeze([]), hideNatives: false, foldFourCC: false }),
-    strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape' }),
-    cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, keepFiles: Object.freeze([]) }),
-    compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false }),
+    strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape', allLiterals: false }),
+    cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', editorBlockAcceptDynamic: false, keepFiles: Object.freeze([]) }),
+    compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false, stripMediaMetadata: false }),
 });
 
 function record(value, label) {
@@ -45,7 +45,7 @@ export function resolveConfig(input = {}) {
         assert(Object.keys(supplied).every(key => Object.hasOwn(defaults, key)), 'Unknown ' + section + ' option');
         result[section] = { ...defaults, ...supplied };
     }
-    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled']], ['cleanup', ['editor', 'development', 'editorData', 'listfile']], ['compression', ['enabled', 'zopfli']]]) {
+    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock', 'editorBlockAcceptDynamic']], ['compression', ['enabled', 'zopfli', 'stripMediaMetadata']]]) {
         for (const key of keys) assert(typeof result[section][key] === 'boolean', section + '.' + key + ' must be boolean');
     }
     result.lua.keepLocals = names(result.lua.keepLocals, 'lua.keepLocals', true);
@@ -54,10 +54,22 @@ export function resolveConfig(input = {}) {
     assert(['compact', 'seeded'].includes(result.lua.nameMode), 'lua.nameMode must be compact or seeded');
     validateSeed(result.lua.seed, 'lua.seed');
     assert(['escape', 'runtime'].includes(result.strings.mode), 'strings.mode must be escape or runtime');
+    // Escape mode is a notation only; widening it would just enlarge the script.
+    // Layers are validated separately, so only an enabled scope needs the mode.
+    assert(!result.strings.enabled || !result.strings.allLiterals || result.strings.mode === 'runtime', 'strings.allLiterals requires strings.mode runtime');
     assert(Array.isArray(result.strings.keep) && Array.from(result.strings.keep).every(value => typeof value === 'string' && value.isWellFormed()), 'strings.keep must contain well-formed Unicode strings');
     result.strings.keep = [...new Set(result.strings.keep)];
     result.cleanup.keepFiles = names(result.cleanup.keepFiles, 'cleanup.keepFiles');
     result.compression.excludeFiles = names(result.compression.excludeFiles, 'compression.excludeFiles');
+    // Editor blocking rewrites the two trigger files that editor cleanup deletes.
+    assert(['version', 'truncated', 'empty'].includes(result.cleanup.editorBlockFormat), 'cleanup.editorBlockFormat must be version, truncated or empty');
+    assert(['both', 'wtg', 'wct'].includes(result.cleanup.editorBlockFiles), 'cleanup.editorBlockFiles must be both, wtg or wct');
+    if (result.cleanup.editorBlock) {
+        assert(!result.cleanup.editor, 'cleanup.editorBlock replaces the editor trigger files; turn off cleanup.editor');
+        const kept = new Set(result.cleanup.keepFiles.map(canonicalPath));
+        const targets = { both: ['WAR3MAP.WTG', 'WAR3MAP.WCT'], wtg: ['WAR3MAP.WTG'], wct: ['WAR3MAP.WCT'] }[result.cleanup.editorBlockFiles];
+        assert(!targets.some(name => kept.has(name)), 'cleanup.editorBlock cannot keep a blocked war3map.wtg or war3map.wct');
+    }
     const levels = result.compression.levels;
     assert(Array.isArray(levels) && levels.length > 0 && levels.length <= 10 && levels.every(level => Number.isInteger(level) && level >= 0 && level <= 9), 'compression.levels must contain zlib levels 0..9');
     result.compression.levels = [...new Set(levels)].sort((a, b) => a - b);

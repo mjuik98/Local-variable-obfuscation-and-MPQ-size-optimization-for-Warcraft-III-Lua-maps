@@ -16,19 +16,25 @@ let pool = null, jobs = 0;
 // 0x02 compression mask. Zopfli runs only where zlib already saves at least
 // 10%; nearly incompressible sectors (textures, audio) cannot repay its cost.
 export function compressSector(raw, { levels, strategies, zopfli = false }) {
-    let best = raw;
+    // Candidates are compared by their size with the one-byte mask; only the
+    // selected stream is copied behind it.
+    let stream = null, size = raw.length;
     for (const level of levels) for (const strategy of strategies) {
         // Level zero adds a zlib wrapper and stored-block framing, so it can
         // never beat the already available raw sector.
         if (level === 0) continue;
-        const candidate = Buffer.concat([Buffer.from([2]), zlib.deflateSync(raw, { level, strategy: zlibStrategies[strategy] })]);
-        if (candidate.length < best.length) best = candidate;
+        const candidate = zlib.deflateSync(raw, { level, strategy: zlibStrategies[strategy] });
+        if (candidate.length + 1 < size) { stream = candidate; size = candidate.length + 1; }
     }
-    if (zopfli && best.length < raw.length * 0.9) {
-        const candidate = Buffer.concat([Buffer.from([2]), zopfliZlib(raw)]);
-        if (candidate.length < best.length) best = candidate;
+    if (zopfli && size < raw.length * 0.9) {
+        const candidate = zopfliZlib(raw);
+        if (candidate.length + 1 < size) { stream = candidate; size = candidate.length + 1; }
     }
-    return best;
+    if (stream === null) return raw;
+    const packed = Buffer.allocUnsafe(size);
+    packed[0] = 2;
+    stream.copy(packed, 1);
+    return packed;
 }
 
 export function compressionThreads() {

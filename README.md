@@ -12,6 +12,8 @@ Warcraft III Lua 맵의 이름을 난독화하고 배포 용량을 줄이는 로
 - 변환 뒤 Lua를 재파싱하고, local 이름 외의 구문 구조와 변수 바인딩이 같은지 확인한다.
 - 선택한 문자열 리터럴을 숫자 바이트 이스케이프로 숨긴다. 복원 함수·추가 호출 없이 Lua가 원래 바이트를 읽으며, 변환 뒤 모든 문자열의 바이트와 구문 구조를 확인한다.
 - 선택한 seed로 짧은 local 이름의 배정을 다양화하는 `seeded` 모드를 제공한다. 기존 `compact` 모드와 기본 출력은 유지한다.
+- 실험 옵션으로 `runtime` 문자열 숨김 범위를 rawcode·오더·콜백 이름·경로·툴팁 형식까지 넓힌다. 복원 바이트는 같으며 WTS 참조·빈 문자열·여러 줄 리터럴은 원문을 유지한다. [모든 리터럴 숨김](docs/protection.md#모든-리터럴-숨김-실험) 문서를 참고한다.
+- 실험 옵션으로 `war3map.wtg`·`war3map.wct`를 빈 데이터로 바꿔 World Editor가 "트리거 데이터가 없거나 잘못되었습니다" 오류로 열기를 거부하게 한다. 게임은 두 파일을 읽지 않는다. [World Editor 열기 차단](docs/cleanup.md#world-editor-열기-차단-실험) 문서를 참고한다.
 - 실험적인 `runtime` 문자열 모드는 ChaCha20 암호문을 4바이트 단위 숫자로 저장하고 순수 Lua로 복원한다. 원래 바이트를 처음 사용 시 복원해 내부 캐시에 보관하고 해당 암호문 테이블을 해제한다. 게임 난수·native·표준 라이브러리 호출에 의존하지 않는다. 복원 함수와 VM 해석기는 청크에서 쓰지 않는 가장 짧은 이름을 사용해 고정된 도구 식별 이름을 남기지 않는다.
 - 명시적으로 지정한 local 함수에 제한된 전용 VM을 적용한다. 원본 함수의 수치·논리식과 조건 분기를 seed별 명령 데이터로 바꾸며, 지정하지 않은 코드의 구문 보존과 출력 재파싱을 검사한다.
 - 지원 파일은 zlib 레벨·전략과 비압축 후보를 비교하고, 기존 payload보다 작아지는 경우에만 재압축한다. 기본은 이전과 같은 레벨 6·9와 `default` 전략이다. MPQ 빈 공간도 회수한다.
@@ -28,7 +30,7 @@ Warcraft III Lua 맵의 이름을 난독화하고 배포 용량을 줄이는 로
 - Windows 화면을 열어 둔 동안 검증한 맵 한 건을 메모리에 보관하고, 같은 입력·최종 설정·설정 파일·계약에 한해 재사용한다. 입력과 결과 버퍼의 합은 192 MiB로 제한한다.
 - 입력은 읽기 전용이다. 결과를 검증한 뒤 새로운 출력 경로에만 확정하며 기존 파일은 덮어쓰지 않는다.
 
-보호 기능은 소스 분석 비용을 높인다. 런타임 문자열 복원과 VM에도 실행에 필요한 데이터·해석기가 포함되며 암호학적인 비밀 보관, 에디터 열기 방지나 복구 불가능성을 보장하지 않는다. 용량 최적화는 실행 속도 개선을 뜻하지 않으며, 모든 입력에서 전체 맵 크기가 줄어드는 것도 보장하지 않는다.
+보호 기능은 소스 분석 비용을 높인다. 런타임 문자열 복원과 VM에도 실행에 필요한 데이터·해석기가 포함되며 암호학적인 비밀 보관, 에디터 열기 방지나 복구 불가능성을 보장하지 않는다. 실험 옵션인 에디터 열기 차단도 MPQ 편집기로 두 파일을 지우면 해제되는 억제 수단이다. 용량 최적화는 실행 속도 개선을 뜻하지 않으며, 모든 입력에서 전체 맵 크기가 줄어드는 것도 보장하지 않는다.
 
 ## 사용
 
@@ -89,6 +91,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--name-mode ID` | `compact` 또는 seed별 이름을 배정하는 `seeded` |
 | `--seed Value` | 이름·런타임 문자열·VM의 결정적 변환 seed |
 | `--hide-strings` / `--no-hide-strings` | 문자열 숨김 켜기 / 설정 파일에서 켠 문자열 숨김 해제 |
+| `--hide-all-strings` / `--no-hide-all-strings` | `runtime` 문자열 숨김 범위를 rawcode·오더·콜백·경로·형식까지 넓히기 / 기본 범위 유지 (실험) |
 | `--string-mode ID` | `escape` 또는 `runtime`; 모드 선택만으로 숨김을 켜지는 않음 |
 | `--no-runtime-strings` | 문자열 방식을 `escape`로 바꿈; 활성 여부는 유지 |
 | `--vm-function Name` | 검토한 원본 local 함수 이름을 VM 대상으로 추가; 반복 가능 |
@@ -98,6 +101,9 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--clean-development` | 참조 검사 후 LoTKT 개발 메타데이터 두 파일 정리 |
 | `--clean-editor-data` | 참조 검사 후 `war3map.w3r/w3c/w3s`와 `war3map.imp` 정리 |
 | `--remove-listfile` / `--keep-listfile` | 모든 단계가 끝난 뒤 MPQ `(listfile)` 삭제 / 보존 (실험) |
+| `--block-editor` / `--no-block-editor` | 참조 검사 후 `war3map.wtg`·`war3map.wct`를 지원하지 않는 형식으로 대체해 World Editor 열기 차단 시도 / 해제 (실험) |
+| `--block-editor-accept-dynamic` | 동적 `Preloader`·`_G` 조회가 트리거 파일을 읽지 않음을 직접 확인하고 계약 없이 열기 차단만 허용 (실험) |
+| `--editor-block-format ID` / `--editor-block-files ID` | 열기 차단 데이터 형태 `empty`(기본)·`version`·`truncated` / 대상 `both`(기본)·`wtg`·`wct` (실험) |
 | `--cleanup-contract File.json` | 정확히 일치하는 입력 맵의 의존성 검토 계약 읽기 |
 | `--review-cleanup` | 이전 계약과 두 입력 맵을 비교; 맵 출력 없음 |
 | `--previous-input Map.w3x` | 이전 계약에 정확히 일치하는 검토 원본 |
@@ -106,6 +112,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `--no-compress` | 재압축 최적화 해제; MPQ 빈 공간 회수는 유지 |
 | `--sector-size-shift N` | MPQ sector를 `512 × 2^N` 바이트(N = 3..8)로 바꾸고 전체 재압축 (실험) |
 | `--keep-sector-size` | 설정 파일에서 지정한 sector 크기 변경 해제 |
+| `--strip-media-metadata` / `--no-strip-media-metadata` | WAV 정보·채움 청크와 MP3 ID3 태그처럼 소리가 아닌 데이터만 제거 / 보존 (실험) |
 | `--zopfli` / `--no-zopfli` | 압축이 잘 되는 sector에 Zopfli zlib 후보 추가 켜기 / 끄기 (느림) |
 | `--keep-local Name` | 해당 local 이름의 모든 바인딩 보존; 반복 지정 가능 |
 | `--keep-file Path` | 정리 후보 보존; 반복 지정 가능 |
@@ -122,7 +129,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --output "C:\Maps\MyMap-protected.w3x"
 | `protect` | 기본 보호 | local 이름·공백 최적화, 파일 보존, 문자열 숨김 끔 |
 | `distribution` | 배포 준비 | 기본 보호 + 알려진 에디터·개발 파일 정리; 정리를 켜면 정확한 입력의 계약 필요 |
 | `hardened` | 보호 강화 | seed 기반 local 이름 변경 + 런타임 문자열 복원; 파일 보존·VM 자동 선택 없음 |
-| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + `(listfile)` 삭제 + 64 KiB sector; 파일 정리는 별도 |
+| `maximum` | 최대 보호 | 보호 강화 + 전역·닫힌 테이블 필드 이름 변경 + 엔진·Lua 라이브러리 함수 호출 숨김(이름도 런타임 문자열로 암호화) + `FourCC` 치환 + 모든 리터럴 런타임 숨김 + `(listfile)` 삭제 + 64 KiB sector; 파일 정리는 별도 |
 
 설정 우선순위는 기본값 → 프리셋 → JSON → CLI 또는 화면의 명시적 선택이다. 프리셋을 생략하면 기존 기본 동작을 사용한다. JSON 설정은 덮어쓰기 전에 엄격하게 검증하며 잘못된 값을 CLI로 가리지 않는다. 반복 보존·제외·VM 선택 옵션은 JSON 배열에 추가된다. `--no-vm`은 합친 VM 목록을 모두 비우며 다른 VM 선택보다 우선한다. `distribution --no-cleanup`은 파일 정리를 해제한다. `hardened`와 `maximum`에서만 문자열 숨김을 기본으로 켠다. 화면의 문자열 체크박스가 최종 활성 여부를 결정한다.
 
@@ -145,7 +152,7 @@ npm run protect -- "C:\Maps\MyMap.w3x" --check --details --compression-strategy 
 ## 상세 문서
 
 - [Lua 보호 옵션](docs/protection.md): 문자열 숨김(escape·runtime), seed 이름, 선택적 함수 VM, 전역·닫힌 테이블 필드 이름 변경, 엔진·라이브러리 함수 숨김, `FourCC` 치환과 LoTKT 2.4E 측정 결과
-- [MPQ 구조 옵션](docs/archive.md): sector 크기 변경, `(listfile)` 삭제, 병렬 섹터 압축의 메모리와 대기 동작
+- [MPQ 구조 옵션](docs/archive.md): sector 크기 변경, `(listfile)` 삭제, 병렬 섹터 압축의 메모리와 대기 동작, 오디오 메타데이터 제거
 - [파일 정리와 검토 계약](docs/cleanup.md): 에디터·개발·에디터 데이터 정리, 검토 계약 작성·재검토와 LoTKT 계약 파일
 - [게임 검증 기록과 체크리스트](docs/verification.md): 실제 Warcraft III에서 확인한 결과와 남은 확인 항목
 
