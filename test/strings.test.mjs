@@ -242,3 +242,22 @@ second]==], "kept value", calls[1], ("%d|r"):format(3), ({["key"] = "value"}).ke
     assert.deepEqual(transformStrings(source, { enabled: true, mode: 'runtime', allLiterals: false }), standard);
     assert.throws(() => transformStrings(source, { enabled: true, mode: 'escape', allLiterals: true }), /requires runtime mode/);
 });
+
+test('preloaded runtime strings decode every literal while the chunk loads and keep the default helper unchanged', () => {
+    const source = `local function late() return "decoded later" end
+return "first message", late(), "first message", "another literal"`;
+    const lazy = transformStrings(source, { enabled: true, mode: 'runtime' });
+    const eager = transformStrings(source, { enabled: true, mode: 'runtime', preload: true });
+    assert.deepEqual(returnedBytes(eager.code), returnedBytes(source));
+    assert.equal(eager.stats.preloaded, true);
+    assert.equal(lazy.stats.preloaded, undefined);
+    assert.equal(eager.stats.uniqueRuntimeLiterals, lazy.stats.uniqueRuntimeLiterals);
+    assert.equal(transformStrings(source, { enabled: true, mode: 'runtime', preload: false }).code, lazy.code, 'Preload off keeps the previous output');
+    // The helper's decoder is the same; only its last statement changes.
+    const helperOf = result => result.code.slice(0, result.code.indexOf('\n'));
+    const loop = helperOf(eager).match(/local ([A-Za-z])=function\(.*;for ([A-Za-z])=1,(\d+) do \1\(\2\) end;return \1 end\)\(\);$/);
+    assert(loop, 'The helper decodes each literal ID once at load');
+    assert.equal(Number(loop[3]), eager.stats.uniqueRuntimeLiterals);
+    assert(helperOf(lazy).endsWith(' end end)();'));
+    assert.throws(() => transformStrings(source, { enabled: true, mode: 'escape', preload: true }), /requires runtime mode/);
+});

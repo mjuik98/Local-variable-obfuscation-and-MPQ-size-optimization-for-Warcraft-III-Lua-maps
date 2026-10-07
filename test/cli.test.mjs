@@ -448,3 +448,9 @@ test('CLI toggles experimental audio metadata stripping', () => {
     assert.equal(parseArguments(['--show-settings', '--no-strip-media-metadata']).overrides.compression.stripMediaMetadata, false);
     assert.throws(() => parseArguments(['--show-settings', '--strip-media-metadata', '--no-strip-media-metadata']), /conflicts/);
 });
+
+test('CLI toggles experimental runtime string preloading and escape mode clears it', () => {
+    assert.equal(parseArguments(['--show-settings', '--preload-strings']).overrides.strings.preload, true);
+    assert.equal(parseArguments(['--show-settings', '--no-runtime-strings']).overrides.strings.preload, false);
+    assert.throws(() => parseArguments(['--show-settings', '--preload-strings', '--no-preload-strings']), /conflicts/);
+});

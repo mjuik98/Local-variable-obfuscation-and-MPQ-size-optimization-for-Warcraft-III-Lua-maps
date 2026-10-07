@@ -16,7 +16,7 @@ export function normalizeCompressionStrategies(strategies) {
 export const DEFAULT_CONFIG = Object.freeze({
     lua: Object.freeze({ minify: true, renameLocals: true, keepLocals: Object.freeze([]), nameMode: 'compact', seed: 'warcraft-lua-protector', vmFunctions: Object.freeze([]),
         renameGlobals: false, renameFields: false, keepGlobals: Object.freeze([]), hideNatives: false, foldFourCC: false }),
-    strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape', allLiterals: false }),
+    strings: Object.freeze({ enabled: false, keep: Object.freeze([]), mode: 'escape', allLiterals: false, preload: false }),
     cleanup: Object.freeze({ editor: false, development: false, editorData: false, listfile: false, editorBlock: false, editorBlockFormat: 'empty', editorBlockFiles: 'both', editorBlockAcceptDynamic: false, keepFiles: Object.freeze([]) }),
     compression: Object.freeze({ enabled: true, levels: Object.freeze([6, 9]), strategies: Object.freeze(['default']), excludeFiles: Object.freeze([]), sectorSizeShift: null, zopfli: false, stripMediaMetadata: false }),
 });
@@ -45,7 +45,7 @@ export function resolveConfig(input = {}) {
         assert(Object.keys(supplied).every(key => Object.hasOwn(defaults, key)), 'Unknown ' + section + ' option');
         result[section] = { ...defaults, ...supplied };
     }
-    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock', 'editorBlockAcceptDynamic']], ['compression', ['enabled', 'zopfli', 'stripMediaMetadata']]]) {
+    for (const [section, keys] of [['lua', ['minify', 'renameLocals', 'renameGlobals', 'renameFields', 'hideNatives', 'foldFourCC']], ['strings', ['enabled', 'allLiterals', 'preload']], ['cleanup', ['editor', 'development', 'editorData', 'listfile', 'editorBlock', 'editorBlockAcceptDynamic']], ['compression', ['enabled', 'zopfli', 'stripMediaMetadata']]]) {
         for (const key of keys) assert(typeof result[section][key] === 'boolean', section + '.' + key + ' must be boolean');
     }
     result.lua.keepLocals = names(result.lua.keepLocals, 'lua.keepLocals', true);
@@ -57,6 +57,7 @@ export function resolveConfig(input = {}) {
     // Escape mode is a notation only; widening it would just enlarge the script.
     // Layers are validated separately, so only an enabled scope needs the mode.
     assert(!result.strings.enabled || !result.strings.allLiterals || result.strings.mode === 'runtime', 'strings.allLiterals requires strings.mode runtime');
+    assert(!result.strings.enabled || !result.strings.preload || result.strings.mode === 'runtime', 'strings.preload requires strings.mode runtime');
     assert(Array.isArray(result.strings.keep) && Array.from(result.strings.keep).every(value => typeof value === 'string' && value.isWellFormed()), 'strings.keep must contain well-formed Unicode strings');
     result.strings.keep = [...new Set(result.strings.keep)];
     result.cleanup.keepFiles = names(result.cleanup.keepFiles, 'cleanup.keepFiles');
