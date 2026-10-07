@@ -34,9 +34,9 @@ const presets = [
     },
     {
         id: 'maximum', label: '최대 보호',
-        description: '보호 강화에 더해 정적으로 확인된 전역·닫힌 테이블 필드 이름 변경, 엔진·Lua 라이브러리 함수 호출 숨김, FourCC 상수 치환과 (listfile) 삭제를 적용합니다. 모두 게임 검증이 필요한 실험 옵션입니다. 섹터 크기 변경과 파일 정리는 별도로 켭니다.',
+        description: '보호 강화에 더해 정적으로 확인된 전역·닫힌 테이블 필드 이름 변경, 엔진·Lua 라이브러리 함수 호출 숨김, FourCC 상수 치환, (listfile) 삭제와 64 KiB MPQ 섹터를 적용합니다. 솔로 플레이에서 확인했으며 멀티플레이 검증이 필요한 실험 옵션입니다. 파일 정리는 별도로 켭니다.',
         checkOnly: false, requiresCleanupContract: false,
-        settings: { lua: { minify: true, renameLocals: true, nameMode: 'seeded', vmFunctions: [], renameGlobals: true, renameFields: true, hideNatives: true, foldFourCC: true }, strings: { enabled: true, mode: 'runtime' }, cleanup: { editor: false, development: false, listfile: true }, compression: { enabled: true, levels: [6, 9] } },
+        settings: { lua: { minify: true, renameLocals: true, nameMode: 'seeded', vmFunctions: [], renameGlobals: true, renameFields: true, hideNatives: true, foldFourCC: true }, strings: { enabled: true, mode: 'runtime' }, cleanup: { editor: false, development: false, listfile: true }, compression: { enabled: true, levels: [6, 9], sectorSizeShift: 7 } },
     },
 ];
 const appendKeys = { lua: ['keepLocals', 'vmFunctions', 'keepGlobals'], strings: ['keep'], cleanup: ['keepFiles'], compression: ['excludeFiles'] };

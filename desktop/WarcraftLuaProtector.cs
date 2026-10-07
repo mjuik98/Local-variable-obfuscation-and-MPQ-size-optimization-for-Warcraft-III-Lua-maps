@@ -360,7 +360,7 @@ namespace WarcraftLuaProtectorDesktop
             presetBox.Items.Add(new PresetItem { Id = "protect", Label = "기본 보호", Description = "Lua 주석·공백 정리와 local 이름 변경을 적용합니다. 파일 정리는 기본적으로 끕니다." });
             presetBox.Items.Add(new PresetItem { Id = "distribution", Label = "배포 준비", Description = "Lua 기본 보호와 알려진 에디터·개발 파일 정리를 적용합니다. 파일 정리를 켜면 검토 계약이 필요합니다.", RequiresCleanupContract = true });
             presetBox.Items.Add(new PresetItem { Id = "hardened", Label = "보호 강화", Description = "시드 이름과 런타임 문자열 복원을 적용합니다. VM 함수는 직접 지정하며 게임 검증이 필요한 실험 옵션입니다. 파일 정리는 기본적으로 끕니다." });
-            presetBox.Items.Add(new PresetItem { Id = "maximum", Label = "최대 보호", Description = "보호 강화에 더해 전역·필드 이름 변경, 엔진·라이브러리 함수 호출 숨김, FourCC 치환과 (listfile) 삭제를 적용합니다. 게임 검증이 필요한 실험 옵션입니다." });
+            presetBox.Items.Add(new PresetItem { Id = "maximum", Label = "최대 보호", Description = "보호 강화에 더해 전역·필드 이름 변경, 엔진·라이브러리 함수 호출 숨김, FourCC 치환, (listfile) 삭제와 64 KiB MPQ 섹터를 적용합니다. 멀티플레이 검증이 필요한 실험 옵션입니다." });
             presetBox.SelectedIndex = 2;
         }
         private PresetItem SelectedPreset() { return presetBox.SelectedItem as PresetItem; }
