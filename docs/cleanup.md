@@ -21,7 +21,7 @@
 같은 입력의 에디터 데이터까지 정리하려면 `cleanup/lotkt-2.4e-2026-10-06-editor-data-contract.json`을 사용한다. 기존 검토에 더해 editor `main`(412..428행)의 `InitSounds`·`CreateRegions`·`CreateCameras` 호출, 영역 88개·카메라 1개·사운드 7개가 Lua의 `gg_rct_`·`gg_cam_`·`gg_snd_` 개수와 일치함, import 목록 873행이 모두 MPQ에 남아 있음과 네 파일 이름의 참조 부재를 기록했다. 게임 실행으로 확인한 것은 아니다.
 
 ```powershell
-npm run protect -- "..\LoTKT\dist\LoTKT 2.4E.w3x" --check --preset maximum --clean-editor --clean-development --clean-editor-data --cleanup-contract "cleanup/lotkt-2.4e-2026-10-06-editor-data-contract.json" --sector-size-shift 7
+npm run protect -- "..\LoTKT\dist\LoTKT 2.4E.w3x" --check --preset maximum --clean-editor --clean-development --clean-editor-data --cleanup-contract "cleanup/lotkt-2.4e-2026-10-06-editor-data-contract.json"
 ```
 
 Windows에서는 위 계약을 **검토 계약 → 찾아보기**로 선택하고, 고급 설정에서 정리 두 항목을 켠 뒤 검사한다. 문자열 보호도 적용하려면 **보호 강화** 프리셋을 선택한다. 계약 자체가 정리나 문자열 보호를 켜지는 않는다.

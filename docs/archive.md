@@ -8,7 +8,7 @@ World Editor 맵은 4 KiB sector(shift 3)를 사용하며 각 sector를 독립�
 
 모든 활성 블록을 디코딩할 수 있어야 한다. 이름은 `(listfile)`과 알려진 내부 파일에서 찾으며, 암호화 블록은 정확히 하나의 알려진 이름이 필요하다. FIX_KEY 블록은 새 offset으로 다시 암호화한다. 해시·locale 슬롯, 블록 번호, 원본 크기, 암호화 플래그와 attributes 내용을 유지하고 압축 비트·offset·packed 크기만 바뀐다. PKWARE·single-unit·sector CRC 등 지원하지 않는 블록이 있으면 중단한다. 재압축 제외 목록과 함께 사용할 수 없고 재압축을 켜야 한다.
 
-**Warcraft III가 4 KiB가 아닌 sector 크기를 읽는지는 이 도구가 확인하지 않는다.** 정적 검사는 MPQ 재읽기만 증명한다. 배포 전에 테스트 맵으로 로딩·모든 리소스 표시·저장 데이터·멀티플레이를 직접 확인하고, 문제가 있으면 `--keep-sector-size`로 되돌린다.
+도구의 정적 검사는 MPQ 재읽기만 증명한다. 2026-10-07에 사용자가 LoTKT 2.4E의 64 KiB sector 사본(`maximum`·전체 정리 포함)을 배틀넷 솔로 플레이로 로딩·플레이했고 이상이 없었다([검증 기록](verification.md)). 멀티플레이와 다른 shift 값은 확인하지 않았다. `maximum` 프리셋은 64 KiB(shift 7)를 사용하며, 문제가 있으면 `--keep-sector-size`로 되돌린다.
 
 ### `(listfile)` 삭제 (실험)
 
