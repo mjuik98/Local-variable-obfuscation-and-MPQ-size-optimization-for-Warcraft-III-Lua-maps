@@ -334,7 +334,7 @@ namespace WarcraftLuaProtectorDesktop
             Label footer = new Label { Text = "원본은 읽기만 하며 기존 출력 파일은 덮어쓰지 않습니다. 실제 게임 실행 · 멀티플레이 · 성능 확인은 별도로 필요합니다.", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(100, 110, 125), Font = new Font("맑은 고딕", 8.5F), Padding = new Padding(0, 8, 0, 0) };
             layout.Controls.Add(footer, 0, 5);
 
-            presetBox.SelectedIndexChanged += delegate { PresetItem selected = SelectedPreset(); if (!loadingPresets && selected != null && selected.Id != lastPresetId) { lastPresetId = selected.Id; hideStrings.Checked = selected.Id == "hardened"; } InvalidateConfiguration(); UpdateAvailability(); };
+            presetBox.SelectedIndexChanged += delegate { PresetItem selected = SelectedPreset(); if (!loadingPresets && selected != null && selected.Id != lastPresetId) { lastPresetId = selected.Id; hideStrings.Checked = selected.Id == "hardened" || selected.Id == "maximum"; } InvalidateConfiguration(); UpdateAvailability(); };
             inputPath.TextChanged += delegate { InvalidateReview(); InvalidateCombinations(); UpdateAvailability(); };
             configurationPath.TextChanged += delegate { InvalidateConfiguration(); UpdateAvailability(); };
             cleanupContractPath.TextChanged += delegate { InvalidateCombinations(); UpdateAvailability(); };
