@@ -146,3 +146,30 @@ test('persistent JSON protocol accepts sequential requests and releases its cach
     assert(results[0].ok && !results[0].cache.reused && results[1].ok && results[1].cache.reused);
     assert.deepEqual(fs.readdirSync(map.directory), [path.basename(map.input)]);
 });
+
+test('the desktop protocol ends the session when one request line exceeds the size limit', async () => {
+    const { PassThrough } = await import('node:stream');
+    const { runDesktopProtocol } = await import('../src/desktop.mjs');
+    const input = new PassThrough(), output = new PassThrough(), events = [];
+    output.on('data', chunk => { for (const line of chunk.toString().split('\n')) if (line) events.push(JSON.parse(line)); });
+    const lines = runDesktopProtocol({ input, output, persistent: true });
+    const closed = new Promise(resolve => lines.on('close', resolve));
+    // No newline ever arrives: the guard stops buffering instead of waiting.
+    for (let index = 0; index < 4; index++) input.write(Buffer.alloc(64 * 1024, 0x61));
+    await closed;
+    assert.deepEqual(events, [{ type: 'result', ok: false, error: 'Desktop request exceeds the size limit' }]);
+    assert(input.destroyed);
+});
+
+test('the desktop protocol still answers requests split across chunks', async () => {
+    const { PassThrough } = await import('node:stream');
+    const { runDesktopProtocol } = await import('../src/desktop.mjs');
+    const input = new PassThrough(), output = new PassThrough(), events = [];
+    output.on('data', chunk => { for (const line of chunk.toString().split('\n')) if (line) events.push(JSON.parse(line)); });
+    const lines = runDesktopProtocol({ input, output });
+    const closed = new Promise(resolve => lines.on('close', resolve));
+    input.write('{"action":'); input.write('"presets"}\n');
+    await closed;
+    assert.equal(events.length, 1);
+    assert(events[0].ok && events[0].presets.length === 6);
+});

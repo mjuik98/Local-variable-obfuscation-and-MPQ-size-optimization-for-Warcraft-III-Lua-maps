@@ -73,6 +73,10 @@ export function startDesktopJob(request, options = {}) {
     return { cancel: job.cancel, completion: job.completion.finally(() => session.close()) };
 }
 
+const MAX_REQUEST_CHARACTERS = 65536;
+// UTF-8 needs at most three bytes for each UTF-16 unit of a request line.
+const MAX_PENDING_BYTES = MAX_REQUEST_CHARACTERS * 3;
+
 export function runDesktopProtocol({ input = process.stdin, output = process.stdout, persistent = false } = {}) {
     const lines = createInterface({ input, crlfDelay: Infinity });
     let job = null, closing = false;
@@ -83,9 +87,25 @@ export function runDesktopProtocol({ input = process.stdin, output = process.std
         if (typeof input.destroy === 'function') input.destroy();
         return session.close();
     };
+    // readline buffers a line until its newline arrives, so an unterminated
+    // line is bounded here before it can grow without limit.
+    let pending = 0, overflowed = false;
+    input.on('data', chunk => {
+        if (overflowed) return;
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const newline = bytes.lastIndexOf(10);
+        pending = newline < 0 ? pending + bytes.length : bytes.length - newline - 1;
+        if (pending <= MAX_PENDING_BYTES) return;
+        overflowed = true;
+        emit({ type: 'result', ok: false, error: 'Desktop request exceeds the size limit' });
+        // The session ends: a running job is cancelled and closes it when done.
+        if (job) { closing = true; job.cancel(); }
+        else void close();
+    });
     lines.on('line', line => {
+        if (overflowed) return;
         try {
-            assert(line.length <= 65536, 'Desktop request exceeds the size limit');
+            assert(line.length <= MAX_REQUEST_CHARACTERS, 'Desktop request exceeds the size limit');
             const request = JSON.parse(line);
             if (request?.action === 'cancel') {
                 assert(Object.keys(request).length === 1, 'Unknown cancellation field');
